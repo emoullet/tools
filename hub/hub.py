@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""
+Arduino Bridge Node (CSV)
+==========================
+
+Pont bidirectionnel entre Arduino (USB / CSV) et ROS 2.
+
+Arduino → ROS :
+- bouton (test)
+
+ROS → Arduino :
+- 
+"""
+
+import rclpy
+from rclpy.node import Node
+
+from std_msgs.msg import String
+
+import serial
+import threading
+import time
+import geometry_msgs.msg
+from std_msgs.msg import Bool, Int8MultiArray, Float32MultiArray, Float32, String, Float32MultiArray
+
+class ArduinoBridgeNode(Node):
+
+    def __init__(self):
+        super().__init__('arduino_bridge_node')
+
+        self.loop_rate = self.create_rate(10, self.get_clock())
+
+        # ---------------- PUBLISHERS ----------------
+        self.digital_input_pub = self.create_publisher(Float32MultiArray, '/hub/digital_input', 10)
+        self.analogic_input_pub = self.create_publisher(Float32MultiArray, '/hub/analogic_input', 10)
+        
+
+        # ---------------- SUBSCRIBERS ----------------
+        self.create_subscription(Float32MultiArray, '/hub/digital_output', self.callback_digital_output, 10)
+        
+        # ---------------- SERIAL ----------------
+        try :
+            self.serial_port = serial.Serial(
+                port='/dev/ttyACM0',
+                baudrate=115200,
+                timeout=0.1
+            )
+            self.get_logger().info("Arduino Mega connecté sur /dev/ttyACM0")
+        except Exception as e:
+            self.get_logger().error(f"Impossible d'ouvrir le port série: {e}")
+            raise
+
+        # Thread lecture série
+        self.serial_thread = threading.Thread(
+            target=self.read_serial_loop,
+            daemon=True
+        )
+        self.serial_thread.start()
+
+    # =====================================================
+    #            SERIAL → ROS (LECTURE)
+    # =====================================================
+    def read_serial_loop(self):
+        """
+        Lecture des lignes envoyées par l'Arduino (CSV)
+        Formats attendus :
+        - Bouton: PB,statut
+        """
+        buffer = ""
+
+        while rclpy.ok():
+            try:
+                n = self.serial_port.in_waiting
+                if n > 0:
+                    string = self.serial_port.read(n).decode('utf-8', errors='ignore')
+                    buffer += string
+
+                    while '\n' in buffer:
+                        line, buffer = buffer.split('\n', 1)
+                        line = line.strip()
+                        if line:
+                            #print(f"DEBUG RAW LINE: [{line}]")
+                            self.handle_csv_line(line)
+                else:
+                    time.sleep(0.002)
+            except Exception as e:
+                self.get_logger().error(f"Erreur série: {e}")
+                time.sleep(0.1)
+
+    # =====================================================
+    #               CSV DISPATCHER
+    # =====================================================
+    def handle_csv_line(self, line: str):
+        """
+        Dispatch selon le premier caractère de la ligne CSV
+        """
+        if line.startswith("d "):
+            self.digitalInput(line)
+        elif line.startswith("a "):
+            self.analogicInput(line)
+        else:
+            self.get_logger().warn(f"Ligne CSV inconnue: {line}")
+
+    # =====================================================
+    #             ARDUINO → ROS
+    # =====================================================
+    def digitalInput(self, line: str):
+        """
+        Format attendu : d <pin_number> <value>
+        """
+        try:
+            msg = Float32MultiArray()
+            parts = line.split(' ')
+            size = len(parts)
+            for i in range (1, size) :
+                msg.data.append(float(parts[i]))
+            self.digital_input_pub.publish(msg)
+
+        except Exception as e:
+            self.get_logger().error(f"Erreur parsing button: {e}")
+
+    def analogicInput(self, line: str):
+        """
+        Format attendu : a <pin_number> <value>
+        """
+        try:
+            msg = Float32MultiArray()
+            parts = line.split(' ')
+            size = len(parts)
+            for i in range (1, size) :
+                msg.data.append(float(parts[i]))    
+            self.analogic_input_pub.publish(msg)
+
+        except Exception as e:
+            self.get_logger().error(f"Erreur parsing button: {e}")
+
+    # =====================================================
+    #               ROS → ARDUINO
+    # =====================================================
+    
+    def callback_digital_output(self, msg: Float32MultiArray):
+        """
+        Reçoit la commande du topic et l’envoie à l’Arduino.
+        """
+        #self.get_logger().info(msg.data)
+        try:
+            """
+            Format attendu : D pin_number value
+            """
+            csv_str = "D"
+            #self.get_logger().info(f"Length of msg.data: {msg.data}")
+            #self.get_logger().info(f"Length of msg.data: {len(msg.data)}")
+            for i in range(len(msg.data)):
+                csv_str += f" {int(msg.data[i])}"
+            csv_str += " \n"
+            
+            self.serial_port.write(csv_str.encode('utf-8'))
+            # LOG pour debug
+            self.get_logger().info(f"Send digital output command : {csv_str.strip()}")
+
+
+        except Exception as e:
+            self.get_logger().error(f"Erreur digital output : {e}")
+
+    # =====================================================
+    #                     CLEANUP
+    # =====================================================
+    def destroy_node(self):
+        if self.serial_port.is_open:
+            self.serial_port.close()
+        super().destroy_node()
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = ArduinoBridgeNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+if __name__ == '__main__':
+    main()
