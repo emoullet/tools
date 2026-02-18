@@ -17,10 +17,10 @@ A message consists of at least three elements :
 
 You may add as much information as you wish, provided that it is of the same type and that the PIN number is indicated.
 
-Example for sending a value with "/hub/digital_output" : "D 2 0" = send a digital value to pin "2" in state "0"
+Example for sending a value with "/hub/digital_output" : data:[2,0] = send a digital value to pin "2" in state "0"
 
-Example2 for sending a value with "/hub/digital_output" : "D 2 0 3 1" = send a digital value to pin "2" in state "0" and send a digital value to pin "3" in state "1"
+Example2 for sending a value with "/hub/digital_output" : data:[2,0,3,1] = send a digital value to pin "2" in state "0" and send a digital value to pin "3" in state "1"
 
-Example for receved a value with "/hub/digital_input" : "d 30 1 44 1" = receve a digital value from pin "30" in state "1" and receve a digital value from pin "44" in state "1"
+Example for receved a value with "/hub/digital_input" : data:[30,1,44,1] = receve a digital value from pin "30" in state "1" and receve a digital value from pin "44" in state "1"
 
-Example for receved a value with "/hub/analogic_input" : "a 0 127 4 248" = receve an analogic value to pin "0" in state "127" and receve an analogic value from pin "4" in state "248"
+Example for receved a value with "/hub/analogic_input" : data[0,127,4,248] = receve an analogic value to pin "0" in state "127" and receve an analogic value from pin "4" in state "248"
