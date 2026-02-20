@@ -1,9 +1,15 @@
 hand_landmarks_node:
   ros__parameters:
     image_topic: "/camera/color/image_raw"
+    depth_topic: "/camera/aligned_depth_to_color/image_raw"
+    camera_info_topic: "/camera/color/camera_info"
     landmarks_topic: "/hand_landmarks"
     model_path: ""
     num_hands: 1
+    use_depth: false
+    depth_time_tolerance_ms: 10.0
+    depth_min_m: 0.05
+    depth_max_m: 2.0
     min_hand_detection_confidence: 0.5
     min_hand_presence_confidence: 0.5
     min_tracking_confidence: 0.5

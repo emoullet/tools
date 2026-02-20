@@ -41,6 +41,12 @@ Motion capture using Google MediaPipe. Detects and tracks landmarks from RGB cam
 - `hand_landmarks_node`: Detects hand landmarks from an image using mediapipe
 - `viewer_node`: Display the landmarks from mediapipe
 
+**Depth fusion tip**:
+- Launch with `use_depth:=true` (and optionally `depth_topic`, `camera_info_topic`) to fuse aligned depth with RGB and publish metric 3D landmarks.
+
+**Example**:
+- `ros2 launch mediapipe_mocap hand_landmarks_launch.py use_depth:=true depth_topic:=/camera/aligned_depth_to_color/image_raw camera_info_topic:=/camera/color/camera_info`
+
 ### offline_media_publisher
 **Package**: `offline_media_publisher`
 

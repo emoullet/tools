@@ -1,8 +1,8 @@
 import rclpy
 from rclpy.node import Node
 
-from sensor_msgs.msg import Image, PointCloud
-from geometry_msgs.msg import Point32
+from sensor_msgs.msg import Image, PointCloud2
+from sensor_msgs_py import point_cloud2
 from cv_bridge import CvBridge
 
 import cv2
@@ -20,7 +20,7 @@ class HandLandmarksViewer(Node):
     """
     Subscribe to:
       - /camera/color/image_raw (sensor_msgs/Image)
-      - /hand_landmarks (sensor_msgs/PointCloud, 21 normalized points)
+      - /hand_landmarks (sensor_msgs/PointCloud2, 21 normalized points)
 
     Display the current image with landmarks overlaid using OpenCV.
     """
@@ -53,7 +53,7 @@ class HandLandmarksViewer(Node):
         )
 
         self.landmarks_sub = self.create_subscription(
-            PointCloud,
+            PointCloud2,
             landmarks_topic,
             self.landmarks_callback,
             10
@@ -81,10 +81,19 @@ class HandLandmarksViewer(Node):
         with self.lock:
             self.latest_image = cv_bgr
 
-    def landmarks_callback(self, msg: PointCloud):
+    def landmarks_callback(self, msg: PointCloud2):
         with self.lock:
-            # Copy points into a simple list
-            self.latest_landmarks = list(msg.points)
+            # Parse PointCloud2 message to get (x, y, z) points
+            points = []
+            for x, y, z in point_cloud2.read_points(msg, field_names=('x', 'y', 'z'), skip_nans=True):
+                # Create a simple object to hold x, y, z attributes
+                class Point:
+                    def __init__(self, x, y, z):
+                        self.x = x
+                        self.y = y
+                        self.z = z
+                points.append(Point(x, y, z))
+            self.latest_landmarks = points
 
     # ---------------- Display Timer ----------------
 
