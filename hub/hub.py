@@ -27,9 +27,8 @@ class ArduinoBridgeNode(Node):
 
     def __init__(self):
         super().__init__('arduino_bridge_node')
-
         self.loop_rate = self.create_rate(10, self.get_clock())
-
+        
         # ---------------- PUBLISHERS ----------------
         self.digital_input_pub = self.create_publisher(Float32MultiArray, '/hub/digital_input', 10)
         self.analogic_input_pub = self.create_publisher(Float32MultiArray, '/hub/analogic_input', 10)
@@ -37,6 +36,7 @@ class ArduinoBridgeNode(Node):
 
         # ---------------- SUBSCRIBERS ----------------
         self.create_subscription(Float32MultiArray, '/hub/digital_output', self.callback_digital_output, 10)
+        self.time0 = self.get_clock().now().nanoseconds / 1e9
         
         # ---------------- SERIAL ----------------
         try :
@@ -85,7 +85,7 @@ class ArduinoBridgeNode(Node):
                     time.sleep(0.002)
             except Exception as e:
                 self.get_logger().error(f"Erreur série: {e}")
-                time.sleep(0.1)
+                #time.sleep(0.1)
 
     # =====================================================
     #               CSV DISPATCHER
@@ -143,6 +143,7 @@ class ArduinoBridgeNode(Node):
         Reçoit la commande du topic et l’envoie à l’Arduino.
         """
         #self.get_logger().info(msg.data)
+        #self.time0 = self.get_clock().now()
         try:
             """
             Format attendu : D pin_number value
@@ -158,9 +159,11 @@ class ArduinoBridgeNode(Node):
             # LOG pour debug
             self.get_logger().info(f"Send digital output command : {csv_str.strip()}")
 
-
         except Exception as e:
             self.get_logger().error(f"Erreur digital output : {e}")
+        
+        #end_time =  self.get_clock().now() - self.time0
+        #self.get_logger().info(f"Time: {end_time}")
 
     # =====================================================
     #                     CLEANUP
@@ -171,10 +174,19 @@ class ArduinoBridgeNode(Node):
         super().destroy_node()
 
 def main(args=None):
+    # Init ROS
     rclpy.init(args=args)
+
     node = ArduinoBridgeNode()
+    prev_time = node.get_clock().now()
     try:
-        rclpy.spin(node)
+        while rclpy.ok():
+            rclpy.spin(node)
+            rate.sleep()
+            time = get_clock().now()
+            freq = 1.0 / (time - prev_time).nanoseconds * 1e9
+            node.get_logger().info(f"Loop frequency: {freq:.2f} Hz")
+            prev_time = get_clock().now()
     except KeyboardInterrupt:
         pass
     finally:
