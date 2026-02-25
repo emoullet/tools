@@ -27,8 +27,9 @@ class ArduinoBridgeNode(Node):
 
     def __init__(self):
         super().__init__('arduino_bridge_node')
+
         self.loop_rate = self.create_rate(10, self.get_clock())
-        
+
         # ---------------- PUBLISHERS ----------------
         self.digital_input_pub = self.create_publisher(Float32MultiArray, '/hub/digital_input', 10)
         self.analogic_input_pub = self.create_publisher(Float32MultiArray, '/hub/analogic_input', 10)
@@ -174,19 +175,10 @@ class ArduinoBridgeNode(Node):
         super().destroy_node()
 
 def main(args=None):
-    # Init ROS
     rclpy.init(args=args)
-
     node = ArduinoBridgeNode()
-    prev_time = node.get_clock().now()
     try:
-        while rclpy.ok():
-            rclpy.spin(node)
-            rate.sleep()
-            time = get_clock().now()
-            freq = 1.0 / (time - prev_time).nanoseconds * 1e9
-            node.get_logger().info(f"Loop frequency: {freq:.2f} Hz")
-            prev_time = get_clock().now()
+        rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:
