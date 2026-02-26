@@ -24,3 +24,9 @@ Example2 for sending a value with "/hub/digital_output" : data:[2,0,3,1] = send 
 Example for receved a value with "/hub/digital_input" : data:[30,1,44,1] = receve a digital value from pin "30" in state "1" and receve a digital value from pin "44" in state "1"
 
 Example for receved a value with "/hub/analogic_input" : data[0,127,4,248] = receve an analogic value to pin "0" in state "127" and receve an analogic value from pin "4" in state "248"
+
+You can try publishing manually to the "/hub/digital_output" topic with the following example :
+ros2 topic pub -1 /hub/digital_output std_msgs/msg/Float32MultiArray "layout:
+  dim: []
+  data_offset: 0
+data: [2.0,0.0]"
