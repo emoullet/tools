@@ -36,6 +36,8 @@ class ArduinoBridgeNode(Node):
 
         # ---------------- SUBSCRIBERS ----------------
         self.create_subscription(Float32MultiArray, '/hub/digital_output', self.callback_digital_output, 10)
+        self.create_subscription(Float32MultiArray, '/hub/pwm_output', self.callback_pwm_output, 10)
+        self.create_subscription(Float32MultiArray, '/hub/setting', self.callback_setting, 10)
         self.time0 = self.get_clock().now().nanoseconds / 1e9
         
         # ---------------- SERIAL ----------------
@@ -111,6 +113,7 @@ class ArduinoBridgeNode(Node):
         try:
             msg = Float32MultiArray()
             parts = line.split(' ')
+            self.get_logger().info(f"Received digital input: {parts}")  
             size = len(parts)
             for i in range (1, size) :
                 msg.data.append(float(parts[i]))
@@ -146,7 +149,7 @@ class ArduinoBridgeNode(Node):
         #self.time0 = self.get_clock().now()
         try:
             """
-            Format attendu : D pin_number value
+            Format attendu : D <pin_number> <value>
             """
             csv_str = "D"
             #self.get_logger().info(f"Length of msg.data: {msg.data}")
@@ -165,6 +168,59 @@ class ArduinoBridgeNode(Node):
         #end_time =  self.get_clock().now() - self.time0
         #self.get_logger().info(f"Time: {end_time}")
 
+    def callback_pwm_output(self, msg: Float32MultiArray):
+        """
+        Reçoit la commande du topic et l’envoie à l’Arduino.
+        """
+        #self.get_logger().info(msg.data)
+        #self.time0 = self.get_clock().now()
+        try:
+            """
+            Format attendu : P <pin_number> <value>
+            """
+            csv_str = "P"
+            #self.get_logger().info(f"Length of msg.data: {msg.data}")
+            #self.get_logger().info(f"Length of msg.data: {len(msg.data)}")
+            for i in range(len(msg.data)):
+                csv_str += f" {int(msg.data[i])}"
+            csv_str += " \n"
+            
+            self.serial_port.write(csv_str.encode('utf-8'))
+            # LOG pour debug
+            self.get_logger().info(f"Send pwm output command : {csv_str.strip()}")
+
+        except Exception as e:
+            self.get_logger().error(f"Erreur pwm output : {e}")
+        
+        #end_time =  self.get_clock().now() - self.time0
+        #self.get_logger().info(f"Time: {end_time}")
+
+    def callback_setting(self, msg: Float32MultiArray):
+        """
+        Reçoit la commande du topic et l’envoie à l’Arduino.
+        """
+        #self.get_logger().info(msg.data)
+        #self.time0 = self.get_clock().now()
+        try:
+            """
+            Format attendu : S <pin_number> <type I/O> (<value>)
+            """
+            csv_str = "S"
+            #self.get_logger().info(f"Length of msg.data: {msg.data}")
+            #self.get_logger().info(f"Length of msg.data: {len(msg.data)}")
+            for i in range(len(msg.data)):
+                csv_str += f" {int(msg.data[i])}"
+            csv_str += " \n"
+            
+            self.serial_port.write(csv_str.encode('utf-8'))
+            # LOG pour debug
+            self.get_logger().info(f"Send settings command : {csv_str.strip()}")
+
+        except Exception as e:
+            self.get_logger().error(f"Erreur settings : {e}")
+        
+        #end_time =  self.get_clock().now() - self.time0
+        #self.get_logger().info(f"Time: {end_time}")
     # =====================================================
     #                     CLEANUP
     # =====================================================
