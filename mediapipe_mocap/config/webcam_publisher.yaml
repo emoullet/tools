@@ -1,0 +1,6 @@
+webcam_publisher:
+  ros__parameters:
+    camera_id: 1
+    fps: 0          # 0 = use native camera FPS
+    frame_width: 0  # 0 = use native camera width
+    frame_height: 0 # 0 = use native camera height

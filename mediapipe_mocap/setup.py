@@ -13,9 +13,10 @@ setup(
         ('share/' + package_name + '/launch', [
             'launch/hand_landmarks_launch.py',
             'launch/viewer_launch.py',
-            'launch/test_offline_video_hand_landmarks_launch.py'
+            'launch/test_offline_video_hand_landmarks_launch.py',
+            'launch/webcam_hand_landmarks_launch.py'
         ]),
-        ('share/' + package_name + '/config', ['config/hand_landmarks_node.yaml']),
+        ('share/' + package_name + '/config', ['config/hand_landmarks_node.yaml', 'config/webcam_publisher.yaml']),
         ('share/' + package_name + '/models', ['models/hand_landmarker.task']),
     ],
     install_requires=['setuptools'],
@@ -29,6 +30,7 @@ setup(
         'console_scripts': [
             'hand_landmarks_node = mediapipe_mocap.hand_landmarks_node:main',
             'viewer_node = mediapipe_mocap.viewer_node:main',
+            'webcam_publisher = mediapipe_mocap.webcam_publisher_node:main',
         ],
     },
 )

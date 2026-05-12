@@ -8,6 +8,41 @@ from cv_bridge import CvBridge
 import cv2
 import numpy as np
 import threading
+import os
+import sys
+
+
+def _add_venv_site_packages_to_path():
+    candidate_roots = []
+
+    venv_root = os.environ.get('VIRTUAL_ENV')
+    if venv_root:
+        candidate_roots.append(venv_root)
+
+    current_dir = os.getcwd()
+    for _ in range(4):
+        candidate = os.path.join(current_dir, '.venv_mediapipe')
+        if os.path.isdir(candidate):
+            candidate_roots.append(candidate)
+            break
+        parent_dir = os.path.dirname(current_dir)
+        if parent_dir == current_dir:
+            break
+        current_dir = parent_dir
+
+    for root in candidate_roots:
+        site_packages = os.path.join(
+            root,
+            'lib',
+            f'python{sys.version_info.major}.{sys.version_info.minor}',
+            'site-packages',
+        )
+        if os.path.isdir(site_packages) and site_packages not in sys.path:
+            sys.path.insert(0, site_packages)
+            return
+
+
+_add_venv_site_packages_to_path()
 
 import mediapipe as mp
 from mediapipe.framework.formats import landmark_pb2
