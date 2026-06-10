@@ -36,6 +36,7 @@ This package subscribes to camera images and runs MediaPipe's HandLandmarker to 
 | `min_hand_detection_confidence` | double | 0.5 | Minimum confidence for hand detection |
 | `min_hand_presence_confidence` | double | 0.5 | Minimum confidence for hand presence |
 | `min_tracking_confidence` | double | 0.5 | Minimum tracking confidence |
+| `running_mode` | string | `VIDEO` | MediaPipe running mode: `VIDEO` (sync) or `LIVE_STREAM` (async callback) |
 | `enable_one_euro_filter` | bool | false | Enable One Euro smoothing on each landmark coordinate |
 | `one_euro_frequency` | double | 30.0 | Expected landmark update frequency in Hz |
 | `one_euro_mincutoff` | double | 1.0 | Minimum cutoff frequency (lower = smoother) |
@@ -117,6 +118,10 @@ Topics can be overridden via parameters (`image_topic`, `landmarks_topic`, `wind
 
 Parameters are loaded from `config/hand_landmarks_node.yaml`. 
 
+**Running mode (`running_mode`):**
+- `VIDEO`: synchronous processing with `detect_for_video`, good default for deterministic frame-by-frame handling.
+- `LIVE_STREAM`: asynchronous processing with `detect_async` + callback, useful for stream-oriented pipelines.
+
 **Model path handling:**
 - By default, `model_path` is left empty in the YAML file, which triggers automatic resolution to `<package_share>/models/hand_landmarker.task`
 - To use a custom model, edit `config/hand_landmarks_node.yaml` and set `model_path` to an absolute path:
@@ -132,7 +137,16 @@ Override parameters at runtime:
 ros2 run mediapipe_mocap hand_landmarks_node \
   --ros-args \
   -p image_topic:=/my/custom/image/topic \
-  -p model_path:=/path/to/custom/model.task
+  -p model_path:=/path/to/custom/model.task \
+  -p running_mode:=VIDEO
+```
+
+Run with asynchronous mode:
+
+```bash
+ros2 run mediapipe_mocap hand_landmarks_node \
+  --ros-args \
+  -p running_mode:=LIVE_STREAM
 ```
 
 Enable built-in visualization directly in the node:
@@ -150,6 +164,12 @@ ros2 run mediapipe_mocap hand_landmarks_node \
 Starts only the hand landmarks detection node:
 ```bash
 ros2 launch mediapipe_mocap hand_landmarks_launch.py
+```
+
+Select running mode at launch time:
+
+```bash
+ros2 launch mediapipe_mocap hand_landmarks_launch.py running_mode:=LIVE_STREAM
 ```
 
 With built-in visualization enabled:

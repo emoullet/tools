@@ -3,6 +3,7 @@ from rclpy.node import Node
 
 from sensor_msgs.msg import Image, PointCloud
 from geometry_msgs.msg import Point32
+from geometry_msgs.msg import PointStamped
 from cv_bridge import CvBridge
 
 import cv2
@@ -66,10 +67,12 @@ class HandLandmarksViewer(Node):
         # Parameters (topics can be changed if needed)
         self.declare_parameter('image_topic', '/camera/color/image_raw')
         self.declare_parameter('landmarks_topic', '/hand_landmarks')
+        self.declare_parameter('reference_topic', '/hand_reference')
         self.declare_parameter('window_name', 'Hand Landmarks Viewer')
 
         image_topic = self.get_parameter('image_topic').get_parameter_value().string_value
         landmarks_topic = self.get_parameter('landmarks_topic').get_parameter_value().string_value
+        reference_topic = self.get_parameter('reference_topic').get_parameter_value().string_value
         self.window_name = self.get_parameter('window_name').get_parameter_value().string_value
 
         self.bridge = CvBridge()
@@ -77,6 +80,7 @@ class HandLandmarksViewer(Node):
         # Shared state
         self.latest_image = None          # OpenCV BGR image
         self.latest_landmarks = None      # list[Point32]
+        self.latest_reference = None      # tuple[float, float, float]
         self.lock = threading.Lock()
 
         # Subscribers
@@ -94,6 +98,13 @@ class HandLandmarksViewer(Node):
             10
         )
 
+        self.reference_sub = self.create_subscription(
+            PointStamped,
+            reference_topic,
+            self.reference_callback,
+            10
+        )
+
         # Timer to periodically display the image (e.g., 30 Hz)
         self.timer = self.create_timer(1.0 / 30.0, self.timer_callback)
 
@@ -101,6 +112,7 @@ class HandLandmarksViewer(Node):
             f'HandLandmarksViewer started.\n'
             f'  image_topic      = {image_topic}\n'
             f'  landmarks_topic  = {landmarks_topic}\n'
+            f'  reference_topic  = {reference_topic}\n'
             f'  window_name      = {self.window_name}'
         )
 
@@ -121,6 +133,10 @@ class HandLandmarksViewer(Node):
             # Copy points into a simple list
             self.latest_landmarks = list(msg.points)
 
+    def reference_callback(self, msg: PointStamped):
+        with self.lock:
+            self.latest_reference = (float(msg.point.x), float(msg.point.y), float(msg.point.z))
+
     # ---------------- Display Timer ----------------
 
     def timer_callback(self):
@@ -129,10 +145,14 @@ class HandLandmarksViewer(Node):
                 return
             img = self.latest_image.copy()
             landmarks = self.latest_landmarks
+            reference = self.latest_reference
 
         # Draw landmarks with MediaPipe styling if available
         if landmarks is not None and len(landmarks) > 0:
             img = self.draw_landmarks_on_image(img, landmarks)
+
+        if reference is not None:
+            img = self.draw_reference_on_image(img, reference)
 
         cv2.imshow(self.window_name, img)
         key = cv2.waitKey(1)
@@ -166,6 +186,33 @@ class HandLandmarksViewer(Node):
         )
 
 
+        return annotated_image
+
+    def draw_reference_on_image(self, image, reference):
+        x_norm, y_norm, z_norm = reference
+        annotated_image = np.copy(image)
+        height, width, _ = annotated_image.shape
+        x_px = int(np.clip(x_norm, 0.0, 1.0) * width)
+        y_px = int(np.clip(y_norm, 0.0, 1.0) * height)
+
+        cv2.drawMarker(
+            annotated_image,
+            (x_px, y_px),
+            (255, 0, 255),
+            markerType=cv2.MARKER_CROSS,
+            markerSize=16,
+            thickness=2,
+            line_type=cv2.LINE_AA,
+        )
+        cv2.putText(
+            annotated_image,
+            f'Ref: ({x_norm:.2f}, {y_norm:.2f}, {z_norm:.2f})',
+            (10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (255, 0, 255),
+            2,
+        )
         return annotated_image
 
     def destroy_node(self):

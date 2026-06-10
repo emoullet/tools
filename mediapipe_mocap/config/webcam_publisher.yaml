@@ -4,3 +4,4 @@ webcam_publisher:
     fps: 0          # 0 = use native camera FPS
     frame_width: 0  # 0 = use native camera width
     frame_height: 0 # 0 = use native camera height
+    selfie_mode: true # true = mirror image horizontally (selfie mode)

@@ -3,12 +3,14 @@ from rclpy.node import Node
 
 from sensor_msgs.msg import Image, PointCloud
 from geometry_msgs.msg import Point32
+from geometry_msgs.msg import PointStamped
 from cv_bridge import CvBridge
 
 import cv2
 import numpy as np
 import os
 import sys
+import threading
 
 
 def _add_venv_site_packages_to_path():
@@ -140,12 +142,14 @@ class HandLandmarksNode(Node):
                 ('min_hand_detection_confidence', 0.5),
                 ('min_hand_presence_confidence', 0.5),
                 ('min_tracking_confidence', 0.5),
+                ('running_mode', 'VIDEO'),
                 ('enable_one_euro_filter', False),
                 ('one_euro_frequency', 30.0),
                 ('one_euro_mincutoff', 1.0),
                 ('one_euro_beta', 0.1),
                 ('visualize', False),
-                ('window_name', 'Hand Landmarks (Node)')
+                ('window_name', 'Hand Landmarks (Node)'),
+                ('reference_topic', '/hand_reference'),
             ]
         )
 
@@ -167,6 +171,20 @@ class HandLandmarksNode(Node):
         min_track_conf = float(
             self.get_parameter('min_tracking_confidence').get_parameter_value().double_value
         )
+        running_mode_param = (
+            self.get_parameter('running_mode').get_parameter_value().string_value.upper()
+        )
+        if running_mode_param not in ('VIDEO', 'LIVE_STREAM'):
+            self.get_logger().warning(
+                f"Invalid running_mode '{running_mode_param}', falling back to VIDEO. "
+                "Expected 'VIDEO' or 'LIVE_STREAM'."
+            )
+            running_mode_param = 'VIDEO'
+        self.running_mode = (
+            RunningMode.LIVE_STREAM
+            if running_mode_param == 'LIVE_STREAM'
+            else RunningMode.VIDEO
+        )
         self.enable_one_euro_filter = self.get_parameter('enable_one_euro_filter').get_parameter_value().bool_value
         one_euro_frequency = float(
             self.get_parameter('one_euro_frequency').get_parameter_value().double_value
@@ -179,6 +197,9 @@ class HandLandmarksNode(Node):
         )
         self.visualize = self.get_parameter('visualize').get_parameter_value().bool_value
         self.window_name = self.get_parameter('window_name').get_parameter_value().string_value
+        self.reference_topic = self.get_parameter('reference_topic').get_parameter_value().string_value
+        self.latest_reference = None
+        self.reference_lock = threading.Lock()
 
         # Keep filter parameters in valid ranges to avoid unstable behavior.
         one_euro_frequency = max(one_euro_frequency, 1e-3)
@@ -207,21 +228,37 @@ class HandLandmarksNode(Node):
             self.image_callback,
             20
         )
+        self.reference_sub = self.create_subscription(
+            PointStamped,
+            self.reference_topic,
+            self.reference_callback,
+            10,
+        )
 
         # Detect delegate: use GPU on native Linux, CPU on WSL or other systems
         delegate = self._get_best_delegate()
+
+        self._ts_lock = threading.Lock()
+        self._last_ts_ms = -1
+        self._header_by_ts_ms = {}
+        self._detect_start_by_ts_ms = {}
+        self._max_pending_timestamps = 120
         
-        options = HandLandmarkerOptions(
+        options_kwargs = dict(
             base_options=BaseOptions(
                 model_asset_path=model_path,
                 delegate=delegate
             ),
-            running_mode=RunningMode.VIDEO,   # stream of frames with timestamps
+            running_mode=self.running_mode,
             num_hands=num_hands,
             min_hand_detection_confidence=min_det_conf,
             min_hand_presence_confidence=min_presence_conf,
             min_tracking_confidence=min_track_conf,
         )
+        if self.running_mode == RunningMode.LIVE_STREAM:
+            options_kwargs['result_callback'] = self._on_live_stream_result
+
+        options = HandLandmarkerOptions(**options_kwargs)
 
         self.landmarker = HandLandmarker.create_from_options(options)
         
@@ -230,6 +267,8 @@ class HandLandmarksNode(Node):
             f'  image_topic      = {image_topic}\n'
             f'  landmarks_topic  = {landmarks_topic}\n'
             f'  model_path       = {model_path}\n'
+            f'  running_mode     = {running_mode_param}\n'
+            f'  reference_topic  = {self.reference_topic}\n'
             f'  one_euro_filter  = {self.enable_one_euro_filter}\n'
             f'  visualize        = {self.visualize}'
         )
@@ -262,12 +301,23 @@ class HandLandmarksNode(Node):
         # Wrap as MediaPipe Image
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=cv_rgb)
 
-        # Use ROS time as monotonically increasing timestamp (ms)
-        ts_ms = (
-            msg.header.stamp.sec * 1000
-            + msg.header.stamp.nanosec // 1_000_000
-        )
+        # Use ROS time and enforce strictly increasing timestamps for MediaPipe.
+        ts_ms = self._next_timestamp_ms(msg)
         ts_sec = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        if self.running_mode == RunningMode.LIVE_STREAM:
+            with self._ts_lock:
+                self._header_by_ts_ms[ts_ms] = msg.header
+                self._detect_start_by_ts_ms[ts_ms] = time.time()
+                self._trim_pending_timestamp_maps()
+            try:
+                self.landmarker.detect_async(mp_image, ts_ms)
+            except Exception as e:
+                with self._ts_lock:
+                    self._header_by_ts_ms.pop(ts_ms, None)
+                    self._detect_start_by_ts_ms.pop(ts_ms, None)
+                self.get_logger().error(f'Error in HandLandmarker.detect_async: {e}')
+            return
+
         now = time.time()
         try:
             result = self.landmarker.detect_for_video(mp_image, ts_ms)
@@ -275,6 +325,66 @@ class HandLandmarksNode(Node):
             self.get_logger().error(f'Error in HandLandmarker.detect_for_video: {e}')
             return
         t_mediapipe = time.time() - now
+
+        self._handle_result(
+            result=result,
+            header=msg.header,
+            ts_sec=ts_sec,
+            cv_bgr_for_visualization=cv_bgr,
+            t_mediapipe=t_mediapipe,
+        )
+
+    def _on_live_stream_result(self, result, output_image, timestamp_ms: int):
+        with self._ts_lock:
+            header = self._header_by_ts_ms.pop(timestamp_ms, None)
+            detect_start = self._detect_start_by_ts_ms.pop(timestamp_ms, None)
+
+        if header is None:
+            return
+
+        ts_sec = header.stamp.sec + header.stamp.nanosec * 1e-9
+        t_mediapipe = None
+        if detect_start is not None:
+            t_mediapipe = max(time.time() - detect_start, 0.0)
+
+        cv_bgr = None
+        if self.visualize and output_image is not None:
+            try:
+                cv_rgb = np.array(output_image.numpy_view(), copy=True)
+                cv_bgr = cv2.cvtColor(cv_rgb, cv2.COLOR_RGB2BGR)
+            except Exception:
+                cv_bgr = None
+
+        self._handle_result(
+            result=result,
+            header=header,
+            ts_sec=ts_sec,
+            cv_bgr_for_visualization=cv_bgr,
+            t_mediapipe=t_mediapipe,
+        )
+
+    def _next_timestamp_ms(self, msg: Image) -> int:
+        ts_ms = int(msg.header.stamp.sec) * 1000 + int(msg.header.stamp.nanosec) // 1_000_000
+        with self._ts_lock:
+            if ts_ms <= self._last_ts_ms:
+                ts_ms = self._last_ts_ms + 1
+            self._last_ts_ms = ts_ms
+        return ts_ms
+
+    def reference_callback(self, msg: PointStamped):
+        with self.reference_lock:
+            self.latest_reference = (float(msg.point.x), float(msg.point.y), float(msg.point.z))
+
+    def _trim_pending_timestamp_maps(self):
+        overflow = len(self._header_by_ts_ms) - self._max_pending_timestamps
+        if overflow <= 0:
+            return
+        stale_keys = sorted(self._header_by_ts_ms.keys())[:overflow]
+        for key in stale_keys:
+            self._header_by_ts_ms.pop(key, None)
+            self._detect_start_by_ts_ms.pop(key, None)
+
+    def _handle_result(self, result, header, ts_sec: float, cv_bgr_for_visualization, t_mediapipe):
 
         processed_hand_landmarks = []
         if result.hand_landmarks:
@@ -296,7 +406,7 @@ class HandLandmarksNode(Node):
         if processed_hand_landmarks:
             # Extract first hand's landmarks
             cloud = PointCloud()
-            cloud.header = msg.header
+            cloud.header = header
             cloud.points = processed_hand_landmarks[0]
             self.landmarks_pub.publish(cloud)
             # if self.visualize:
@@ -314,7 +424,9 @@ class HandLandmarksNode(Node):
             self.get_logger().debug('No hand detected in current frame.')
             
         if self.visualize:
-            annotated = cv_bgr.copy()
+            if cv_bgr_for_visualization is None:
+                return
+            annotated = cv_bgr_for_visualization.copy()
             # Draw all detected hands (if multiple)
             for hand_landmarks in processed_hand_landmarks:
                 self._draw_hand_on_image(annotated, hand_landmarks)
@@ -327,8 +439,10 @@ class HandLandmarksNode(Node):
                             cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
                 self.last_time = now
             # write MediaPipe processing time
-            cv2.putText(annotated, f'MP: {t_mediapipe*1000:.1f}ms', (10, 70),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            if t_mediapipe is not None:
+                cv2.putText(annotated, f'MP: {t_mediapipe*1000:.1f}ms', (10, 70),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            self._draw_reference_overlay(annotated)
             cv2.imshow(self.window_name, annotated)
             key = cv2.waitKey(1)
             if key == 27 or key == ord('q'):
@@ -402,6 +516,37 @@ class HandLandmarksNode(Node):
         for start_idx, end_idx in HAND_CONNECTIONS:
             if start_idx < len(points_px) and end_idx < len(points_px):
                 cv2.line(image, points_px[start_idx], points_px[end_idx], (0, 200, 255), 2)
+
+    def _draw_reference_overlay(self, image: np.ndarray):
+        with self.reference_lock:
+            reference = self.latest_reference
+
+        if reference is None:
+            return
+
+        x_norm, y_norm, z_norm = reference
+        height, width = image.shape[:2]
+        x_px = int(np.clip(x_norm, 0.0, 1.0) * width)
+        y_px = int(np.clip(y_norm, 0.0, 1.0) * height)
+
+        cv2.drawMarker(
+            image,
+            (x_px, y_px),
+            (255, 0, 255),
+            markerType=cv2.MARKER_CROSS,
+            markerSize=16,
+            thickness=2,
+            line_type=cv2.LINE_AA,
+        )
+        cv2.putText(
+            image,
+            f'Ref: ({x_norm:.2f}, {y_norm:.2f}, {z_norm:.2f})',
+            (10, 110),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (255, 0, 255),
+            2,
+        )
 
 
 def main(args=None):

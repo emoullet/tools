@@ -21,11 +21,13 @@ class WebcamPublisher(Node):
         self.declare_parameter('fps', 0)
         self.declare_parameter('frame_width', 0)
         self.declare_parameter('frame_height', 0)
+        self.declare_parameter('selfie_mode', False)
         
         camera_id = self.get_parameter('camera_id').get_parameter_value().integer_value
         fps_param = self.get_parameter('fps').get_parameter_value().integer_value
         frame_width = self.get_parameter('frame_width').get_parameter_value().integer_value
         frame_height = self.get_parameter('frame_height').get_parameter_value().integer_value
+        self.selfie_mode = self.get_parameter('selfie_mode').get_parameter_value().bool_value
         
         self.bridge = CvBridge()
         self.publisher = self.create_publisher(Image, "/camera/color/image_raw", 10)
@@ -56,7 +58,8 @@ class WebcamPublisher(Node):
 
         self.get_logger().info(
             f"Webcam publisher started. Capturing from camera {camera_id} "
-            f"at {self.fps:.1f} FPS, resolution {actual_width}x{actual_height}."
+            f"at {self.fps:.1f} FPS, resolution {actual_width}x{actual_height}, "
+            f"selfie_mode={'on' if self.selfie_mode else 'off'}."
         )
 
     def publish_frame(self):
@@ -66,11 +69,13 @@ class WebcamPublisher(Node):
         if not ret:
             self.get_logger().warn("Failed to capture frame from webcam")
             return
+
+        if self.selfie_mode:
+            frame = cv2.flip(frame, 1)
         
         # Convert BGR to RGB for standard ROS image
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        # cv2.imshow("Webcam Publisher", frame)  # Optional: show the captured frame in a window    
-        # cv2.waitKey(1)  # Needed to update the OpenCV window
+        
         
         # Create ROS2 Image message
         msg = self.bridge.cv2_to_imgmsg(frame_rgb, encoding="rgb8")

@@ -7,6 +7,7 @@ hand_landmarks_node:
     min_hand_detection_confidence: 0.5
     min_hand_presence_confidence: 0.5
     min_tracking_confidence: 0.5
+    running_mode: "LIVE_STREAM" # Options: "IMAGE", "VIDEO", "LIVE_STREAM"
     enable_one_euro_filter: true
     one_euro_frequency: 30.0
     one_euro_mincutoff: 5.

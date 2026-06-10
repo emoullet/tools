@@ -21,10 +21,17 @@ def generate_launch_description():
         default_value='Hand Landmarks (Node)',
         description='OpenCV window title when visualize is enabled'
     )
+
+    running_mode_arg = DeclareLaunchArgument(
+        'running_mode',
+        default_value='VIDEO',
+        description="MediaPipe running mode: VIDEO or LIVE_STREAM"
+    )
     
     return LaunchDescription([
         visualize_arg,
         window_name_arg,
+        running_mode_arg,
         Node(
             package='mediapipe_mocap',
             executable='hand_landmarks_node',
@@ -35,6 +42,7 @@ def generate_launch_description():
                 {
                     'visualize': LaunchConfiguration('visualize'),
                     'window_name': LaunchConfiguration('window_name'),
+                    'running_mode': LaunchConfiguration('running_mode'),
                 },
             ]
         )
