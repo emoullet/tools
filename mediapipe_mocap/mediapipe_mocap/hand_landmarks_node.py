@@ -3,14 +3,27 @@ from rclpy.node import Node
 
 from sensor_msgs.msg import Image, PointCloud
 from geometry_msgs.msg import Point32
-from geometry_msgs.msg import PointStamped
+from std_msgs.msg import Bool
 from cv_bridge import CvBridge
 
-import cv2
-import numpy as np
 import os
 import sys
 import threading
+
+
+def _force_nvidia_prime_render_offload():
+    """Request NVIDIA PRIME render offload before OpenGL users are imported."""
+    if sys.platform.startswith('linux') and (
+        os.path.exists('/dev/nvidiactl') or os.path.isdir('/proc/driver/nvidia')
+    ):
+        os.environ['__NV_PRIME_RENDER_OFFLOAD'] = '1'
+        os.environ['__GLX_VENDOR_LIBRARY_NAME'] = 'nvidia'
+
+
+_force_nvidia_prime_render_offload()
+
+import cv2
+import numpy as np
 
 
 def _add_venv_site_packages_to_path():
@@ -117,9 +130,7 @@ class HandLandmarksNode(Node):
 
     Output semantics (for the FIRST detected hand):
       - 21 points in fixed order (MediaPipe index 0..20)
-      - point.x = normalized x in [0,1]
-      - point.y = normalized y in [0,1]
-      - point.z = normalized depth-like z (wrist ≈ 0)  :contentReference[oaicite:4]{index=4}
+      - point.x/y/z = landmark position relative to the current hand reference
 
     header.frame_id and header.stamp are copied from the input Image.
     """
@@ -149,7 +160,13 @@ class HandLandmarksNode(Node):
                 ('one_euro_beta', 0.1),
                 ('visualize', False),
                 ('window_name', 'Hand Landmarks (Node)'),
-                ('reference_topic', '/hand_reference'),
+                ('reset_reference_topic', '/reset_reference'),
+                ('reset_reference_cooldown_sec', 0.25),
+                ('initial_reference', [0.5, 0.5, 0.5]),
+                ('show_control_zones', True),
+                ('dead_zone', 0.05),
+                ('saturation_zone', 0.3),
+                ('tracked_landmark_index', 0),
             ]
         )
 
@@ -197,8 +214,46 @@ class HandLandmarksNode(Node):
         )
         self.visualize = self.get_parameter('visualize').get_parameter_value().bool_value
         self.window_name = self.get_parameter('window_name').get_parameter_value().string_value
-        self.reference_topic = self.get_parameter('reference_topic').get_parameter_value().string_value
-        self.latest_reference = None
+        self.reset_reference_topic = (
+            self.get_parameter('reset_reference_topic').get_parameter_value().string_value
+        )
+        self.reset_reference_cooldown_sec = max(
+            0.0,
+            float(
+                self.get_parameter('reset_reference_cooldown_sec')
+                .get_parameter_value()
+                .double_value
+            ),
+        )
+        initial_reference_values = (
+            self.get_parameter('initial_reference').get_parameter_value().double_array_value
+        )
+        if len(initial_reference_values) < 3:
+            self.get_logger().warning(
+                "Parameter 'initial_reference' must contain at least 3 values (x, y, z). "
+                'Falling back to [0.5, 0.5, 0.5].'
+            )
+            initial_reference_values = [0.5, 0.5, 0.5]
+        self.reference_position = (
+            float(initial_reference_values[0]),
+            float(initial_reference_values[1]),
+            float(initial_reference_values[2]),
+        )
+        self.pending_reference_reset = False
+        self.last_reset_reference_signal = False
+        self.last_reset_reference_time_sec = -1.0
+        self.show_control_zones = self.get_parameter('show_control_zones').get_parameter_value().bool_value
+        self.dead_zone = max(
+            0.0,
+            float(self.get_parameter('dead_zone').get_parameter_value().double_value),
+        )
+        self.saturation_zone = max(
+            1e-6,
+            float(self.get_parameter('saturation_zone').get_parameter_value().double_value),
+        )
+        self.tracked_landmark_index = int(
+            self.get_parameter('tracked_landmark_index').get_parameter_value().integer_value
+        )
         self.reference_lock = threading.Lock()
 
         # Keep filter parameters in valid ranges to avoid unstable behavior.
@@ -207,6 +262,7 @@ class HandLandmarksNode(Node):
         one_euro_beta = max(one_euro_beta, 0.0)
 
         self.one_euro_filters = []
+        self._flat_one_euro_filters = []
         if self.enable_one_euro_filter:
             filter_hand_slots = max(num_hands, 1)
             self.one_euro_filters = [
@@ -215,6 +271,11 @@ class HandLandmarksNode(Node):
                     for _ in range(21 * 3)
                 ]
                 for _ in range(filter_hand_slots)
+            ]
+            self._flat_one_euro_filters = [
+                filter_instance
+                for hand_filters in self.one_euro_filters
+                for filter_instance in hand_filters
             ]
 
         self.bridge = CvBridge()
@@ -228,12 +289,15 @@ class HandLandmarksNode(Node):
             self.image_callback,
             20
         )
-        self.reference_sub = self.create_subscription(
-            PointStamped,
-            self.reference_topic,
-            self.reference_callback,
+        self.reset_reference_sub = self.create_subscription(
+            Bool,
+            self.reset_reference_topic,
+            self.reset_reference_callback,
             10,
         )
+
+        self.frame_size = None  # (width, height) of the first image received
+        self.frame_normalization_factor = None  # (width/(max(width,height)), height/(max(width,height))) for normalizing to [0,1]
 
         # Detect delegate: use GPU on native Linux, CPU on WSL or other systems
         delegate = self._get_best_delegate()
@@ -268,7 +332,16 @@ class HandLandmarksNode(Node):
             f'  landmarks_topic  = {landmarks_topic}\n'
             f'  model_path       = {model_path}\n'
             f'  running_mode     = {running_mode_param}\n'
-            f'  reference_topic  = {self.reference_topic}\n'
+            f'  prime_offload    = '
+            f"{os.environ.get('__NV_PRIME_RENDER_OFFLOAD', '<unset>')} "
+            f"glx_vendor={os.environ.get('__GLX_VENDOR_LIBRARY_NAME', '<unset>')}\n"
+            f'  reset_reference  = {self.reset_reference_topic} '
+            f'(cooldown={self.reset_reference_cooldown_sec:.3f}s)\n'
+            f'  initial_ref      = ({self.reference_position[0]:.3f}, '
+            f'{self.reference_position[1]:.3f}, {self.reference_position[2]:.3f})\n'
+            f'  control_zones    = {self.show_control_zones} '
+            f'(dead={self.dead_zone:.3f}, sat_xyz={self.saturation_zone:.3f}, '
+            f'lm_idx={self.tracked_landmark_index})\n'
             f'  one_euro_filter  = {self.enable_one_euro_filter}\n'
             f'  visualize        = {self.visualize}'
         )
@@ -282,21 +355,29 @@ class HandLandmarksNode(Node):
             )
 
         self.last_time = time.time()
+        self.last_debug_time = self.last_time
         self.frame_count = 0
 
     # -------------------------------------------------------------
     # Image callback: convert ROS image → MediaPipe Image → detect
     # -------------------------------------------------------------
     def image_callback(self, msg: Image):
-        # Convert ROS Image to OpenCV BGR
+        # Convert directly to RGB for MediaPipe. Only convert to BGR later when
+        # the optional OpenCV visualization needs it.
         try:
-            cv_bgr = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+            cv_rgb = self.bridge.imgmsg_to_cv2(msg, desired_encoding='rgb8')
         except Exception as e:
             self.get_logger().error(f'Error converting RGB image: {e}')
             return
 
-        # BGR → RGB (MediaPipe expects SRGB)
-        cv_rgb = cv2.cvtColor(cv_bgr, cv2.COLOR_BGR2RGB)
+        if self.frame_size is None:
+            self.frame_size = (cv_rgb.shape[1], cv_rgb.shape[0])
+            self.frame_normalization_factor = (
+                self.frame_size[0] / min(self.frame_size),
+                self.frame_size[1] / min(self.frame_size),
+            )
+            self.get_logger().info(f'First image received: size={self.frame_size}')
+            self.get_logger().info(f'Normalization factor: {self.frame_normalization_factor}')
 
         # Wrap as MediaPipe Image
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=cv_rgb)
@@ -330,7 +411,9 @@ class HandLandmarksNode(Node):
             result=result,
             header=msg.header,
             ts_sec=ts_sec,
-            cv_bgr_for_visualization=cv_bgr,
+            cv_bgr_for_visualization=(
+                cv2.cvtColor(cv_rgb, cv2.COLOR_RGB2BGR) if self.visualize else None
+            ),
             t_mediapipe=t_mediapipe,
         )
 
@@ -371,29 +454,75 @@ class HandLandmarksNode(Node):
             self._last_ts_ms = ts_ms
         return ts_ms
 
-    def reference_callback(self, msg: PointStamped):
+    def reset_reference_callback(self, msg: Bool):
+        current_signal = bool(msg.data)
+        rising_edge = current_signal and not self.last_reset_reference_signal
+        self.last_reset_reference_signal = current_signal
+
+        if not rising_edge:
+            return
+
+        now_sec = self.get_clock().now().nanoseconds * 1e-9
+        if (
+            self.last_reset_reference_time_sec >= 0.0
+            and now_sec - self.last_reset_reference_time_sec < self.reset_reference_cooldown_sec
+        ):
+            self.get_logger().debug(
+                f'Reset ignored due to cooldown ({self.reset_reference_cooldown_sec:.3f} s)'
+            )
+            return
+
+        self.last_reset_reference_time_sec = now_sec
         with self.reference_lock:
-            self.latest_reference = (float(msg.point.x), float(msg.point.y), float(msg.point.z))
+            self.pending_reference_reset = True
+        self.get_logger().info('Reference reset requested; waiting for next landmark frame to recenter')
 
     def _trim_pending_timestamp_maps(self):
-        overflow = len(self._header_by_ts_ms) - self._max_pending_timestamps
-        if overflow <= 0:
-            return
-        stale_keys = sorted(self._header_by_ts_ms.keys())[:overflow]
-        for key in stale_keys:
-            self._header_by_ts_ms.pop(key, None)
-            self._detect_start_by_ts_ms.pop(key, None)
-
+        while len(self._header_by_ts_ms) > self._max_pending_timestamps:
+            # Dict preserves insertion order; pop the oldest pending timestamp first.
+            oldest_key = next(iter(self._header_by_ts_ms))
+            self._header_by_ts_ms.pop(oldest_key, None)
+            self._detect_start_by_ts_ms.pop(oldest_key, None)
+    
+    def _update_reference_if_needed(self, processed_hand_landmarks, header):
+        # Extract first hand's landmarks
+        first_hand = processed_hand_landmarks[0]
+        with self.reference_lock:
+            if (
+                self.pending_reference_reset
+                and 0 <= self.tracked_landmark_index < len(first_hand)
+            ):
+                tracked_lm = first_hand[self.tracked_landmark_index]
+                self.reference_position = (
+                    float(tracked_lm.x),
+                    float(tracked_lm.y),
+                    float(tracked_lm.z),
+                )
+                self.pending_reference_reset = False
+                self.get_logger().info(
+                    'Reference position recentered from current landmark '
+                    f'{self.tracked_landmark_index}: '
+                    f'({self.reference_position[0]:.3f}, '
+                    f'{self.reference_position[1]:.3f}, '
+                    f'{self.reference_position[2]:.3f})'
+                )
+        
     def _handle_result(self, result, header, ts_sec: float, cv_bgr_for_visualization, t_mediapipe):
 
         processed_hand_landmarks = []
         if result.hand_landmarks:
-            for hand_idx, hand_landmarks in enumerate(result.hand_landmarks):
+            hands_to_process = (
+                result.hand_landmarks
+                if self.visualize
+                else result.hand_landmarks[:1]
+            )
+            for hand_idx, hand_landmarks in enumerate(hands_to_process):
                 processed_hand = []
                 for i, lm in enumerate(hand_landmarks):
                     x = float(lm.x)
-                    y = float(lm.y)
-                    z = float(lm.z)
+                    y = float(lm.y) 
+                    z = 0.
+                    # z = float(lm.z)
                     if self.enable_one_euro_filter and hand_idx < len(self.one_euro_filters):
                         hand_filters = self.one_euro_filters[hand_idx]
                         base_idx = i * 3
@@ -404,23 +533,30 @@ class HandLandmarksNode(Node):
                 processed_hand_landmarks.append(processed_hand)
 
         if processed_hand_landmarks:
-            # Extract first hand's landmarks
+            self._update_reference_if_needed(processed_hand_landmarks, header)
+
+            with self.reference_lock:
+                reference = self.reference_position
+            norm_x, norm_y = self.frame_normalization_factor
+            ref_x, ref_y = reference[0], reference[1]
+
+            relative_points = [
+                Point32(
+                    x=(float(lm.x) - ref_x) * norm_x,
+                    y=(float(lm.y) - ref_y) * norm_y,
+                    z=0.0,
+                )
+                for lm in processed_hand_landmarks[0]  # Only publish the first detected hand
+            ]
+
             cloud = PointCloud()
             cloud.header = header
-            cloud.points = processed_hand_landmarks[0]
+            cloud.points = relative_points
             self.landmarks_pub.publish(cloud)
-            # if self.visualize:
-            #     cv2.imshow(self.window_name, cv_bgr)
-            #     key = cv2.waitKey(1)
-            #     if key == 27 or key == ord('q'):
-            #         self.get_logger().info('Visualization window closed by user.')
-            #         rclpy.shutdown()
-            # No hands → nothing to publish
         else:
             if self.enable_one_euro_filter:
-                for hand_filters in self.one_euro_filters:
-                    for filter_instance in hand_filters:
-                        filter_instance.reset()
+                for filter_instance in self._flat_one_euro_filters:
+                    filter_instance.reset()
             self.get_logger().debug('No hand detected in current frame.')
             
         if self.visualize:
@@ -442,12 +578,14 @@ class HandLandmarksNode(Node):
             if t_mediapipe is not None:
                 cv2.putText(annotated, f'MP: {t_mediapipe*1000:.1f}ms', (10, 70),
                             cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-            self._draw_reference_overlay(annotated)
+            primary_hand = processed_hand_landmarks[0] if processed_hand_landmarks else None
+            self._draw_reference_overlay(annotated, primary_hand)
             cv2.imshow(self.window_name, annotated)
             key = cv2.waitKey(1)
             if key == 27 or key == ord('q'):
                 self.get_logger().info('Visualization window closed by user.')
                 rclpy.shutdown()
+        
 
         # self.get_logger().debug(f'Published {len(cloud.points)} landmarks.')
 
@@ -455,11 +593,11 @@ class HandLandmarksNode(Node):
         if self.get_logger().is_enabled_for(rclpy.logging.LoggingSeverity.DEBUG):
             self.frame_count += 1
             now = time.time()
-            elapsed = now - self.last_time
+            elapsed = now - self.last_debug_time
             if elapsed >= 1.0:  # every 1 second
                 fps = self.frame_count / elapsed
                 self.get_logger().debug(f"Mediapipe FPS = {fps:.2f}")
-                self.last_time = now
+                self.last_debug_time = now
                 self.frame_count = 0
 
     
@@ -481,7 +619,8 @@ class HandLandmarksNode(Node):
         """Check if running on Windows Subsystem for Linux."""
         try:
             with open('/proc/version', 'r') as f:
-                return 'microsoft' in f.read().lower() or 'wsl' in f.read().lower()
+                proc_version = f.read().lower()
+                return 'microsoft' in proc_version or 'wsl' in proc_version
         except Exception:
             return False
 
@@ -517,9 +656,9 @@ class HandLandmarksNode(Node):
             if start_idx < len(points_px) and end_idx < len(points_px):
                 cv2.line(image, points_px[start_idx], points_px[end_idx], (0, 200, 255), 2)
 
-    def _draw_reference_overlay(self, image: np.ndarray):
+    def _draw_reference_overlay(self, image: np.ndarray, hand_landmarks=None):
         with self.reference_lock:
-            reference = self.latest_reference
+            reference = self.reference_position
 
         if reference is None:
             return
@@ -547,6 +686,52 @@ class HandLandmarksNode(Node):
             (255, 0, 255),
             2,
         )
+
+        if self.show_control_zones:
+            # Dead zone is a 3D sphere in control space; draw its XY projection as a circle.
+            dead_radius_px = max(1, int(self.dead_zone * min(width, height)))
+            cv2.circle(image, (x_px, y_px), dead_radius_px, (0, 255, 255), 2, cv2.LINE_AA)
+
+            sat_radius_px = max(1, int(self.saturation_zone * min(width, height)))
+            cv2.circle(image, (x_px, y_px), sat_radius_px, (255, 128, 0), 2, cv2.LINE_AA)
+
+            cv2.putText(
+                image,
+                f'DZ: {self.dead_zone:.2f}  SAT_XYZ: {self.saturation_zone:.2f}',
+                (10, 145),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (255, 255, 255),
+                2,
+            )
+
+        if hand_landmarks and 0 <= self.tracked_landmark_index < len(hand_landmarks):
+            lm = hand_landmarks[self.tracked_landmark_index]
+            lm_x = int(np.clip(float(lm.x), 0.0, 1.0) * width)
+            lm_y = int(np.clip(float(lm.y), 0.0, 1.0) * height)
+            dx = float(lm.x) - x_norm
+            dy = float(lm.y) - y_norm
+            dz = float(lm.z) - z_norm
+
+            in_dead_zone = (dx * dx + dy * dy + dz * dz) ** 0.5 < self.dead_zone
+            x_sat = abs(dx) >= self.saturation_zone
+            y_sat = abs(dy) >= self.saturation_zone
+            z_sat = abs(dz) >= self.saturation_zone
+
+            cv2.circle(image, (lm_x, lm_y), 7, (0, 0, 255), 2, cv2.LINE_AA)
+            cv2.line(image, (x_px, y_px), (lm_x, lm_y), (255, 0, 255), 1, cv2.LINE_AA)
+
+            status = 'DEAD' if in_dead_zone else 'ACTIVE'
+            sat_flags = f'SAT[x:{int(x_sat)} y:{int(y_sat)} z:{int(z_sat)}]'
+            cv2.putText(
+                image,
+                f'LM[{self.tracked_landmark_index}] {status} {sat_flags}',
+                (10, 178),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 220, 255),
+                2,
+            )
 
 
 def main(args=None):

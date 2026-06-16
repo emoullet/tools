@@ -14,4 +14,11 @@ hand_landmarks_node:
     one_euro_beta: 100.
     visualize: true
     window_name: "Hand Landmarks (Node)"
+    reset_reference_topic: "/reset_reference"
+    reset_reference_cooldown_sec: 0.25
+    initial_reference: [0.5, 0.5, 0.5]
+    show_control_zones: true
+    dead_zone: 0.05
+    saturation_zone: 0.3
+    tracked_landmark_index: 0
     
