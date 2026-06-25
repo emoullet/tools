@@ -9,6 +9,7 @@ This package subscribes to camera images and runs MediaPipe's HandLandmarker to 
 ## Features
 
 - **Real-time hand tracking** using MediaPipe Tasks API
+- **OAK-D S2 RGBD 3D hand tracking** using DepthAI v3 aligned stereo depth
 - **Configurable detection thresholds** for detection, presence, and tracking confidence
 - **FPS measurement** to monitor processing performance
 - **Low-latency mode** using sensor data QoS profile
@@ -49,7 +50,7 @@ This package subscribes to camera images and runs MediaPipe's HandLandmarker to 
 
 ### Prerequisites
 
-1. Install MediaPipe in a virtual environment:
+1. Install MediaPipe and DepthAI in a virtual environment:
 
    ```bash
    # Install venv support (Ubuntu 24.04)
@@ -63,12 +64,19 @@ This package subscribes to camera images and runs MediaPipe's HandLandmarker to 
    # Upgrade pip only (do NOT upgrade setuptools/wheel to avoid colcon conflicts)
    python -m pip install --upgrade pip
 
-   # Install mediapipe (mediapipe will pull numpy 2.x — this is expected)
+   # Install MediaPipe (MediaPipe will pull numpy 2.x — this is expected)
    python -m pip install mediapipe
+
+   # Install DepthAI v3 for the OAK-D S2 RGBD node
+   python -m pip install depthai
 
    # Verify
    python -c "import mediapipe as mp; print(mp.__version__)"
+   python -c "import depthai as dai; print(dai.__version__)"
+
+   # Check if your oak camera is detected with the oak viewer (https://docs.luxonis.com/software-v3/depthai/tools/oak-viewer/). Try out all your usb (preferably thunderbolt) port, and keep the port with the highest USB.X.YY.
    ```
+   
 
    > **Note on dependency warnings:** mediapipe installs numpy 2.x, which is incompatible
    > with the system `scipy`. This is safe as long as `scipy` is not used in this package.
@@ -97,6 +105,60 @@ Or run directly (model path is auto-resolved):
 ```bash
 ros2 run mediapipe_mocap hand_landmarks_node
 ```
+
+### Running the OAK-D S2 RGBD 3D Node
+
+The OAK node captures RGB and stereo depth directly with DepthAI v3, aligns depth
+to the RGB frame, runs MediaPipe HandLandmarker on RGB, back-projects each
+landmark with the RGB intrinsics, and publishes 21 reference-relative 3D points.
+By default those points are saturated normalized control inputs in `[-1, 1]`.
+
+Use the standalone launch file (recommended):
+
+```bash
+ros2 launch mediapipe_mocap oak_hand_landmarks_launch.py
+```
+
+Or run the executable directly with the OAK config:
+
+```bash
+ros2 run mediapipe_mocap 3d_hand_landmarks_oak_node \
+  --ros-args \
+  --params-file $(ros2 pkg prefix mediapipe_mocap)/share/mediapipe_mocap/config/3d_hand_landmarks_oak_node.yaml
+```
+
+For the complete OAK hand joystick pipeline, launch it from `hand_joystick_interfaces`:
+
+```bash
+ros2 launch hand_joystick_interfaces oak_hand_joystick_launch.py
+```
+
+Useful overrides:
+
+```bash
+ros2 launch mediapipe_mocap oak_hand_landmarks_launch.py \
+  fps:=30.0 \
+  rgb_width:=640 \
+  rgb_height:=400 \
+  visualize:=true \
+  publish_normalized_landmarks:=false \
+  raw_landmarks_topic:=/hand_landmarks_raw \
+  saturation_zone:=0.4 \
+  landmark_index:=0
+```
+
+Key OAK parameters:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `rgb_size` | `[640, 400]` | RGB/depth output size used for MediaPipe and depth sampling |
+| `fps` | `30.0` | OAK camera FPS |
+| `stereo_preset` | `FAST_DENSITY` | DepthAI StereoDepth preset |
+| `depth_sample_radius_px` | `2` | Median/percentile depth sampling window radius around each landmark |
+| `publish_normalized_landmarks` | `true` | Publish saturated normalized inputs instead of metric relative coordinates |
+| `saturation_zone_xyz` | `[0.4, 0.4, 0.4]` | Per-axis metric displacement that maps to `+/-1` |
+| `normalization_mode` | `axis` | `axis` clips each component; `vector` clips by vector norm |
+| `auto_reference_on_first_detection` | `true` | Use the first valid tracked landmark as the 3D reference |
 
 ### Running the Viewer
 
@@ -176,6 +238,26 @@ With built-in visualization enabled:
 ```bash
 ros2 launch mediapipe_mocap hand_landmarks_launch.py visualize:=true window_name:="Hand Landmarks (Node)"
 ```
+
+### oak_hand_landmarks_launch.py
+Starts only the OAK-D S2 RGBD 3D hand landmarks node:
+```bash
+ros2 launch mediapipe_mocap oak_hand_landmarks_launch.py
+```
+
+**Parameters:**
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `fps` | 30.0 | OAK camera FPS |
+| `rgb_width` | 640 | OAK RGB/depth output width in pixels |
+| `rgb_height` | 400 | OAK RGB/depth output height in pixels |
+| `visualize` | false | Show local OpenCV visualization window |
+| `window_name` | `3D Hand Landmarks OAK` | Window title when `visualize` is enabled |
+| `publish_normalized_landmarks` | true | Publish normalized control landmarks instead of metric 3D landmarks |
+| `raw_landmarks_topic` | empty | Optional topic for metric camera-frame landmarks before normalization |
+| `dead_zone` | 0.05 | Dead zone radius used by the OAK feedback overlay |
+| `saturation_zone` | 0.4 | XYZ saturation distance used by the OAK feedback overlay |
+| `landmark_index` | 0 | Tracked landmark index (0-20) for OAK feedback overlay |
 
 ### viewer_launch.py
 Starts only the viewer node for visualization:
@@ -275,6 +357,7 @@ source install/setup.bash
 - OpenCV
 - cv_bridge
 - MediaPipe (Python)
+- DepthAI (Python, for OAK-D S2 RGBD tracking)
 - NumPy
 
 ## License

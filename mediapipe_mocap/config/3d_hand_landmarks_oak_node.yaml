@@ -1,0 +1,52 @@
+hand_landmarks_oak_3d_node:
+  ros__parameters:
+    landmarks_topic: "/hand_landmarks"
+    raw_landmarks_topic: ""
+    model_path: ""
+    num_hands: 1
+    min_hand_detection_confidence: 0.5
+    min_hand_presence_confidence: 0.5
+    min_tracking_confidence: 0.5
+    running_mode: "LIVE_STREAM"
+
+    camera_frame_id: "oak_rgb_camera_optical_frame"
+    rgb_size: [640, 400]
+    fps: 50.0
+    rgb_socket: "CAM_A"
+    left_socket: "CAM_B"
+    right_socket: "CAM_C"
+    stereo_preset: "FAST_DENSITY"
+    stereo_left_right_check: true
+    stereo_subpixel: false
+    stereo_extended_disparity: false
+    stereo_rectify_edge_fill_color: 0
+    sync_threshold_ms: 15.0
+    sync_attempts: -1
+    sync_run_on_host: true
+
+    depth_sample_radius_px: 2
+    min_depth_m: 0.12
+    max_depth_m: 3.0
+    depth_percentile: 50.0
+    missing_depth_strategy: "reuse_last"  # Options: skip_frame, reuse_last, hand_median
+    max_missing_depth_landmarks: 8
+
+    publish_normalized_landmarks: true
+    normalization_mode: "axis"  # Options: axis, vector
+    saturation_zone: 0.4
+    saturation_zone_xyz: [0.4, 0.4, 0.4]
+    dead_zone: 0.05
+    tracked_landmark_index: 0
+    initial_reference: [0.0, 0.0, 0.6]
+    auto_reference_on_first_detection: true
+    reset_reference_topic: "/resetReference"
+    reset_reference_cooldown_sec: 0.25
+
+    enable_one_euro_filter: true
+    one_euro_frequency: 30.0
+    one_euro_mincutoff: 1.0
+    one_euro_beta: 0.1
+
+    visualize: true
+    window_name: "3D Hand Landmarks OAK"
+    show_control_zones: true
