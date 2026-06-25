@@ -17,7 +17,7 @@ class WebcamPublisher(Node):
 
         # Declare parameters
         # Declare parameters (0 = use native camera value)
-        self.declare_parameter('camera_id', 0)
+        self.declare_parameter('camera_id', 4)
         self.declare_parameter('fps', 0)
         self.declare_parameter('frame_width', 0)
         self.declare_parameter('frame_height', 0)

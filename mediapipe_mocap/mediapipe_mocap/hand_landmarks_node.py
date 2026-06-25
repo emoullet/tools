@@ -7,56 +7,26 @@ from std_msgs.msg import Bool
 from cv_bridge import CvBridge
 
 import os
-import sys
 import threading
+import time
+
+from mediapipe_mocap.hand_landmarks_common import (
+    OneEuroFilter,
+    draw_hand_on_image,
+    draw_reference_overlay,
+    ensure_3_tuple,
+    get_best_mediapipe_delegate,
+    prepare_runtime_imports,
+    relative_points,
+    reset_filter_bank,
+    timestamp_sec_from_header,
+)
 
 
-def _force_nvidia_prime_render_offload():
-    """Request NVIDIA PRIME render offload before OpenGL users are imported."""
-    if sys.platform.startswith('linux') and (
-        os.path.exists('/dev/nvidiactl') or os.path.isdir('/proc/driver/nvidia')
-    ):
-        os.environ['__NV_PRIME_RENDER_OFFLOAD'] = '1'
-        os.environ['__GLX_VENDOR_LIBRARY_NAME'] = 'nvidia'
-
-
-_force_nvidia_prime_render_offload()
+prepare_runtime_imports()
 
 import cv2
 import numpy as np
-
-
-def _add_venv_site_packages_to_path():
-    candidate_roots = []
-
-    venv_root = os.environ.get('VIRTUAL_ENV')
-    if venv_root:
-        candidate_roots.append(venv_root)
-
-    current_dir = os.getcwd()
-    for _ in range(4):
-        candidate = os.path.join(current_dir, '.venv_mediapipe')
-        if os.path.isdir(candidate):
-            candidate_roots.append(candidate)
-            break
-        parent_dir = os.path.dirname(current_dir)
-        if parent_dir == current_dir:
-            break
-        current_dir = parent_dir
-
-    for root in candidate_roots:
-        site_packages = os.path.join(
-            root,
-            'lib',
-            f'python{sys.version_info.major}.{sys.version_info.minor}',
-            'site-packages',
-        )
-        if os.path.isdir(site_packages) and site_packages not in sys.path:
-            sys.path.insert(0, site_packages)
-            return
-
-
-_add_venv_site_packages_to_path()
 
 import mediapipe as mp
 from mediapipe.tasks.python import BaseOptions
@@ -67,60 +37,7 @@ from mediapipe.tasks.python.vision import (
 )
 
 
-import time
-import platform
 from ament_index_python.packages import get_package_share_directory
-
-
-# MediaPipe hand landmark graph edges (21 landmarks)
-HAND_CONNECTIONS = [
-    (0, 1), (1, 2), (2, 3), (3, 4),
-    (0, 5), (5, 6), (6, 7), (7, 8),
-    (5, 9), (9, 10), (10, 11), (11, 12),
-    (9, 13), (13, 14), (14, 15), (15, 16),
-    (13, 17), (17, 18), (18, 19), (19, 20),
-    (0, 17),
-]
-
-
-class OneEuroFilter:
-    """Simple scalar One Euro filter."""
-
-    def __init__(self, frequency: float = 30.0, mincutoff: float = 1.0, beta: float = 0.1):
-        self.frequency = float(frequency)
-        self.mincutoff = float(mincutoff)
-        self.beta = float(beta)
-        self.last_value = 0.0
-        self.last_derivative = 0.0
-        self.last_timestamp = -1.0
-
-    def reset(self):
-        self.last_value = 0.0
-        self.last_derivative = 0.0
-        self.last_timestamp = -1.0
-
-    def filter(self, value: float, timestamp_sec: float) -> float:
-        if self.last_timestamp < 0.0:
-            self.last_value = float(value)
-            self.last_derivative = 0.0
-            self.last_timestamp = float(timestamp_sec)
-            return float(value)
-
-        dt = float(timestamp_sec) - self.last_timestamp
-        if dt <= 0.0:
-            return self.last_value
-
-        derivative = (float(value) - self.last_value) / dt
-        cutoff = self.mincutoff + self.beta * abs(derivative)
-        alpha = cutoff / (cutoff + self.frequency)
-
-        filtered_value = alpha * float(value) + (1.0 - alpha) * self.last_value
-        filtered_derivative = alpha * derivative + (1.0 - alpha) * self.last_derivative
-
-        self.last_value = filtered_value
-        self.last_derivative = filtered_derivative
-        self.last_timestamp = float(timestamp_sec)
-        return filtered_value
 
 
 class HandLandmarksNode(Node):
@@ -141,6 +58,9 @@ class HandLandmarksNode(Node):
         # Get package share directory for default model path
         package_share_dir = get_package_share_directory('mediapipe_mocap')
         default_model_path = os.path.join(package_share_dir, 'models', 'hand_landmarker.task')
+        
+        # print out the current venv
+        self.get_logger().info(f"Using venv: {os.environ.get('VIRTUAL_ENV', 'Not in a virtual environment')}")
 
         # Declare parameters
         self.declare_parameters(
@@ -158,7 +78,7 @@ class HandLandmarksNode(Node):
                 ('one_euro_frequency', 30.0),
                 ('one_euro_mincutoff', 1.0),
                 ('one_euro_beta', 0.1),
-                ('visualize', False),
+                ('visualize', True),
                 ('window_name', 'Hand Landmarks (Node)'),
                 ('reset_reference_topic', '/reset_reference'),
                 ('reset_reference_cooldown_sec', 0.25),
@@ -228,16 +148,11 @@ class HandLandmarksNode(Node):
         initial_reference_values = (
             self.get_parameter('initial_reference').get_parameter_value().double_array_value
         )
-        if len(initial_reference_values) < 3:
-            self.get_logger().warning(
-                "Parameter 'initial_reference' must contain at least 3 values (x, y, z). "
-                'Falling back to [0.5, 0.5, 0.5].'
-            )
-            initial_reference_values = [0.5, 0.5, 0.5]
-        self.reference_position = (
-            float(initial_reference_values[0]),
-            float(initial_reference_values[1]),
-            float(initial_reference_values[2]),
+        self.reference_position = ensure_3_tuple(
+            initial_reference_values,
+            [0.5, 0.5, 0.5],
+            logger=self.get_logger(),
+            parameter_name='initial_reference',
         )
         self.pending_reference_reset = False
         self.last_reset_reference_signal = False
@@ -262,7 +177,6 @@ class HandLandmarksNode(Node):
         one_euro_beta = max(one_euro_beta, 0.0)
 
         self.one_euro_filters = []
-        self._flat_one_euro_filters = []
         if self.enable_one_euro_filter:
             filter_hand_slots = max(num_hands, 1)
             self.one_euro_filters = [
@@ -271,11 +185,6 @@ class HandLandmarksNode(Node):
                     for _ in range(21 * 3)
                 ]
                 for _ in range(filter_hand_slots)
-            ]
-            self._flat_one_euro_filters = [
-                filter_instance
-                for hand_filters in self.one_euro_filters
-                for filter_instance in hand_filters
             ]
 
         self.bridge = CvBridge()
@@ -300,7 +209,7 @@ class HandLandmarksNode(Node):
         self.frame_normalization_factor = None  # (width/(max(width,height)), height/(max(width,height))) for normalizing to [0,1]
 
         # Detect delegate: use GPU on native Linux, CPU on WSL or other systems
-        delegate = self._get_best_delegate()
+        delegate = get_best_mediapipe_delegate(mp, self.get_logger())
 
         self._ts_lock = threading.Lock()
         self._last_ts_ms = -1
@@ -384,7 +293,7 @@ class HandLandmarksNode(Node):
 
         # Use ROS time and enforce strictly increasing timestamps for MediaPipe.
         ts_ms = self._next_timestamp_ms(msg)
-        ts_sec = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        ts_sec = timestamp_sec_from_header(msg.header)
         if self.running_mode == RunningMode.LIVE_STREAM:
             with self._ts_lock:
                 self._header_by_ts_ms[ts_ms] = msg.header
@@ -425,7 +334,7 @@ class HandLandmarksNode(Node):
         if header is None:
             return
 
-        ts_sec = header.stamp.sec + header.stamp.nanosec * 1e-9
+        ts_sec = timestamp_sec_from_header(header)
         t_mediapipe = None
         if detect_start is not None:
             t_mediapipe = max(time.time() - detect_start, 0.0)
@@ -540,23 +449,19 @@ class HandLandmarksNode(Node):
             norm_x, norm_y = self.frame_normalization_factor
             ref_x, ref_y = reference[0], reference[1]
 
-            relative_points = [
-                Point32(
-                    x=(float(lm.x) - ref_x) * norm_x,
-                    y=(float(lm.y) - ref_y) * norm_y,
-                    z=0.0,
-                )
-                for lm in processed_hand_landmarks[0]  # Only publish the first detected hand
-            ]
+            relative_landmarks = relative_points(
+                processed_hand_landmarks[0],
+                (ref_x, ref_y, reference[2]),
+                (norm_x, norm_y, 0.0),
+            )
 
             cloud = PointCloud()
             cloud.header = header
-            cloud.points = relative_points
+            cloud.points = relative_landmarks
             self.landmarks_pub.publish(cloud)
         else:
             if self.enable_one_euro_filter:
-                for filter_instance in self._flat_one_euro_filters:
-                    filter_instance.reset()
+                reset_filter_bank(self.one_euro_filters)
             self.get_logger().debug('No hand detected in current frame.')
             
         if self.visualize:
@@ -565,7 +470,7 @@ class HandLandmarksNode(Node):
             annotated = cv_bgr_for_visualization.copy()
             # Draw all detected hands (if multiple)
             for hand_landmarks in processed_hand_landmarks:
-                self._draw_hand_on_image(annotated, hand_landmarks)
+                draw_hand_on_image(annotated, hand_landmarks)
             # Write fps on the image
             now = time.time()
             elapsed = now - self.last_time
@@ -579,7 +484,22 @@ class HandLandmarksNode(Node):
                 cv2.putText(annotated, f'MP: {t_mediapipe*1000:.1f}ms', (10, 70),
                             cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
             primary_hand = processed_hand_landmarks[0] if processed_hand_landmarks else None
-            self._draw_reference_overlay(annotated, primary_hand)
+            with self.reference_lock:
+                reference = self.reference_position
+            draw_reference_overlay(
+                annotated,
+                reference,
+                primary_hand,
+                tracked_landmark_index=self.tracked_landmark_index,
+                show_control_zones=self.show_control_zones,
+                dead_zone=self.dead_zone,
+                saturation_xyz=(
+                    self.saturation_zone,
+                    self.saturation_zone,
+                    self.saturation_zone,
+                ),
+                label='SAT_XYZ',
+            )
             cv2.imshow(self.window_name, annotated)
             key = cv2.waitKey(1)
             if key == 27 or key == ord('q'):
@@ -614,124 +534,6 @@ class HandLandmarksNode(Node):
             except Exception:
                 pass
         super().destroy_node()
-
-    def _is_wsl(self) -> bool:
-        """Check if running on Windows Subsystem for Linux."""
-        try:
-            with open('/proc/version', 'r') as f:
-                proc_version = f.read().lower()
-                return 'microsoft' in proc_version or 'wsl' in proc_version
-        except Exception:
-            return False
-
-    def _get_best_delegate(self):
-        """Get the best delegate available on the current platform."""
-        system = platform.system()
-        delegate = mp.tasks.BaseOptions.Delegate.CPU
-        delegate_name = 'CPU'
-        if system == 'Linux':
-            if not self._is_wsl():
-                system = 'Linux (native)'
-                delegate = mp.tasks.BaseOptions.Delegate.GPU
-                delegate_name = 'GPU'
-            else:
-                system = 'WSL (Windows Subsystem for Linux)'
-        elif system == 'Darwin':
-            system = 'macOS'
-        self.get_logger().info(f'Platform: {system}. Using {delegate_name} delegate.')
-        return delegate
-
-    def _draw_hand_on_image(self, image: np.ndarray, hand_landmarks):
-        """Draw one hand's landmarks and connections using normalized coordinates."""
-        height, width = image.shape[:2]
-
-        points_px = []
-        for lm in hand_landmarks:
-            x = int(lm.x * width)
-            y = int(lm.y * height)
-            points_px.append((x, y))
-            cv2.circle(image, (x, y), 3, (0, 255, 0), -1)
-
-        for start_idx, end_idx in HAND_CONNECTIONS:
-            if start_idx < len(points_px) and end_idx < len(points_px):
-                cv2.line(image, points_px[start_idx], points_px[end_idx], (0, 200, 255), 2)
-
-    def _draw_reference_overlay(self, image: np.ndarray, hand_landmarks=None):
-        with self.reference_lock:
-            reference = self.reference_position
-
-        if reference is None:
-            return
-
-        x_norm, y_norm, z_norm = reference
-        height, width = image.shape[:2]
-        x_px = int(np.clip(x_norm, 0.0, 1.0) * width)
-        y_px = int(np.clip(y_norm, 0.0, 1.0) * height)
-
-        cv2.drawMarker(
-            image,
-            (x_px, y_px),
-            (255, 0, 255),
-            markerType=cv2.MARKER_CROSS,
-            markerSize=16,
-            thickness=2,
-            line_type=cv2.LINE_AA,
-        )
-        cv2.putText(
-            image,
-            f'Ref: ({x_norm:.2f}, {y_norm:.2f}, {z_norm:.2f})',
-            (10, 110),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
-            (255, 0, 255),
-            2,
-        )
-
-        if self.show_control_zones:
-            # Dead zone is a 3D sphere in control space; draw its XY projection as a circle.
-            dead_radius_px = max(1, int(self.dead_zone * min(width, height)))
-            cv2.circle(image, (x_px, y_px), dead_radius_px, (0, 255, 255), 2, cv2.LINE_AA)
-
-            sat_radius_px = max(1, int(self.saturation_zone * min(width, height)))
-            cv2.circle(image, (x_px, y_px), sat_radius_px, (255, 128, 0), 2, cv2.LINE_AA)
-
-            cv2.putText(
-                image,
-                f'DZ: {self.dead_zone:.2f}  SAT_XYZ: {self.saturation_zone:.2f}',
-                (10, 145),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (255, 255, 255),
-                2,
-            )
-
-        if hand_landmarks and 0 <= self.tracked_landmark_index < len(hand_landmarks):
-            lm = hand_landmarks[self.tracked_landmark_index]
-            lm_x = int(np.clip(float(lm.x), 0.0, 1.0) * width)
-            lm_y = int(np.clip(float(lm.y), 0.0, 1.0) * height)
-            dx = float(lm.x) - x_norm
-            dy = float(lm.y) - y_norm
-            dz = float(lm.z) - z_norm
-
-            in_dead_zone = (dx * dx + dy * dy + dz * dz) ** 0.5 < self.dead_zone
-            x_sat = abs(dx) >= self.saturation_zone
-            y_sat = abs(dy) >= self.saturation_zone
-            z_sat = abs(dz) >= self.saturation_zone
-
-            cv2.circle(image, (lm_x, lm_y), 7, (0, 0, 255), 2, cv2.LINE_AA)
-            cv2.line(image, (x_px, y_px), (lm_x, lm_y), (255, 0, 255), 1, cv2.LINE_AA)
-
-            status = 'DEAD' if in_dead_zone else 'ACTIVE'
-            sat_flags = f'SAT[x:{int(x_sat)} y:{int(y_sat)} z:{int(z_sat)}]'
-            cv2.putText(
-                image,
-                f'LM[{self.tracked_landmark_index}] {status} {sat_flags}',
-                (10, 178),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (0, 220, 255),
-                2,
-            )
 
 
 def main(args=None):
