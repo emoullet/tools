@@ -9,6 +9,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
+    """Create the standalone OAK 3D hand landmarks launch description."""
     package_share_dir = get_package_share_directory('mediapipe_mocap')
     oak_hand_landmarks_config = os.path.join(
         package_share_dir,

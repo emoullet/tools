@@ -21,5 +21,6 @@ import pytest
 @pytest.mark.copyright
 @pytest.mark.linter
 def test_copyright():
+    """Run copyright checks for the package."""
     rc = main(argv=['.', 'test'])
     assert rc == 0, 'Found errors'

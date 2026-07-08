@@ -11,6 +11,7 @@ from sensor_msgs.msg import Image, PointCloud
 
 
 def _add_venv_site_packages_to_path():
+    """Prefer the active or workspace MediaPipe virtualenv on sys.path."""
     candidate_roots = []
 
     venv_root = os.environ.get('VIRTUAL_ENV')
@@ -51,14 +52,15 @@ solutions = mp.solutions
 
 class HandLandmarksViewer(Node):
     """
-    Display images with hand landmarks overlaid using OpenCV.
+    Display images with a PointCloud landmark overlay.
 
-    Subscribe to:
-      - /camera/color/image_raw (sensor_msgs/Image)
-      - /hand_landmarks (sensor_msgs/PointCloud, 21 normalized points)
+    The overlay treats point.x and point.y as image-normalized coordinates.
+    Reference-relative or metric OAK outputs are better inspected with the
+    node-local visualization windows.
     """
 
     def __init__(self):
+        """Initialize subscriptions, shared image state, and display timer."""
         super().__init__('hand_landmarks_viewer')
 
         # Parameters (topics can be changed if needed)
@@ -105,6 +107,16 @@ class HandLandmarksViewer(Node):
     # ---------------- Callbacks ----------------
 
     def image_callback(self, msg: Image):
+        """
+        Store the latest camera image for display.
+
+        Parameters
+        ----------
+        msg : sensor_msgs.msg.Image
+            Camera image message from the configured image topic. It is converted
+            to an OpenCV BGR image and stored as the next frame to annotate.
+
+        """
         try:
             cv_bgr = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
         except Exception as e:
@@ -115,6 +127,16 @@ class HandLandmarksViewer(Node):
             self.latest_image = cv_bgr
 
     def landmarks_callback(self, msg: PointCloud):
+        """
+        Store the latest landmark cloud for display.
+
+        Parameters
+        ----------
+        msg : sensor_msgs.msg.PointCloud
+            Landmark cloud from the configured landmarks topic. Points are copied
+            so the display timer can safely read them under the node lock.
+
+        """
         with self.lock:
             # Copy points into a simple list
             self.latest_landmarks = list(msg.points)
@@ -122,6 +144,7 @@ class HandLandmarksViewer(Node):
     # ---------------- Display Timer ----------------
 
     def timer_callback(self):
+        """Refresh the OpenCV display window when an image is available."""
         with self.lock:
             if self.latest_image is None:
                 return
@@ -140,7 +163,24 @@ class HandLandmarksViewer(Node):
             rclpy.shutdown()
 
     def draw_landmarks_on_image(self, rgb_image, landmarks):
-        """Draw hand landmarks with MediaPipe's visualization utilities."""
+        """
+        Draw hand landmarks with MediaPipe's visualization utilities.
+
+        Parameters
+        ----------
+        rgb_image : numpy.ndarray
+            OpenCV image to annotate. The array is copied before drawing so the
+            caller's frame is not modified.
+        landmarks : Sequence[geometry_msgs.msg.Point32]
+            Landmark points whose ``x`` and ``y`` fields are interpreted as
+            normalized image coordinates for MediaPipe drawing utilities.
+
+        Returns
+        -------
+        numpy.ndarray
+            Annotated image copy, or the original image when no landmarks exist.
+
+        """
         if landmarks is None or len(landmarks) == 0:
             return rgb_image
 
@@ -166,6 +206,7 @@ class HandLandmarksViewer(Node):
         return annotated_image
 
     def destroy_node(self):
+        """Close OpenCV windows before node shutdown."""
         try:
             cv2.destroyAllWindows()
         except Exception:
@@ -174,6 +215,15 @@ class HandLandmarksViewer(Node):
 
 
 def main(args=None):
+    """
+    Run the hand landmarks viewer ROS node.
+
+    Parameters
+    ----------
+    args : list[str] | None
+        Optional ROS command-line arguments passed through to ``rclpy.init``.
+
+    """
     rclpy.init(args=args)
     node = HandLandmarksViewer()
     try:

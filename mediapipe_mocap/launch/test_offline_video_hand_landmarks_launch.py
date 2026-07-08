@@ -8,6 +8,7 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description():
+    """Create the offline-video hand landmarks test launch description."""
     package_share_dir = get_package_share_directory('mediapipe_mocap')
     hand_landmarks_config_file = os.path.join(
         package_share_dir,

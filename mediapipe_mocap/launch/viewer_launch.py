@@ -3,6 +3,7 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description():
+    """Create the hand landmarks viewer launch description."""
     return LaunchDescription([
         Node(
             package='mediapipe_mocap',

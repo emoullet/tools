@@ -9,10 +9,10 @@ class WebcamPublisher(Node):
     """Publish webcam frames as ROS2 Image messages."""
 
     def __init__(self):
+        """Open the configured webcam and create the publish timer."""
         super().__init__('webcam_publisher')
 
-        # Declare parameters
-        # Declare parameters (0 = use native camera value)
+        # Zero width/height/fps values keep the camera's native settings.
         self.declare_parameter('camera_id', 4)
         self.declare_parameter('fps', 0)
         self.declare_parameter('frame_width', 0)
@@ -91,6 +91,15 @@ class WebcamPublisher(Node):
 
 
 def main(args=None):
+    """
+    Run the webcam publisher ROS node.
+
+    Parameters
+    ----------
+    args : list[str] | None
+        Optional ROS command-line arguments passed through to ``rclpy.init``.
+
+    """
     rclpy.init(args=args)
     node = WebcamPublisher()
     try:

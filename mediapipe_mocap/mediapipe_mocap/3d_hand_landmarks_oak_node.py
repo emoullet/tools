@@ -50,12 +50,13 @@ class HandLandmarksOakNode(Node):
     """
 
     def __init__(self):
+        """Initialize parameters, DepthAI capture, MediaPipe, and ROS interfaces."""
         super().__init__('hand_landmarks_oak_3d_node')
 
         package_share_dir = get_package_share_directory('mediapipe_mocap')
         default_model_path = os.path.join(package_share_dir, 'models', 'hand_landmarker.task')
 
-        # print out the current venv
+        # Log active virtual environment for pip-installed MediaPipe/DepthAI debugging.
         virtual_env = os.environ.get('VIRTUAL_ENV', 'Not in a virtual environment')
         self.get_logger().info(f'Using venv: {virtual_env}')
 
@@ -277,18 +278,94 @@ class HandLandmarksOakNode(Node):
         )
 
     def _get_str(self, name):
+        """
+        Read a string ROS parameter.
+
+        Parameters
+        ----------
+        name : str
+            Name of a declared ROS parameter whose value is expected to be stored
+            in the string field.
+
+        Returns
+        -------
+        str
+            Parameter value as a string.
+
+        """
         return self.get_parameter(name).get_parameter_value().string_value
 
     def _get_bool(self, name):
+        """
+        Read a boolean ROS parameter.
+
+        Parameters
+        ----------
+        name : str
+            Name of a declared ROS parameter whose value is expected to be stored
+            in the boolean field.
+
+        Returns
+        -------
+        bool
+            Parameter value as a bool.
+
+        """
         return self.get_parameter(name).get_parameter_value().bool_value
 
     def _get_int(self, name):
+        """
+        Read an integer ROS parameter.
+
+        Parameters
+        ----------
+        name : str
+            Name of a declared ROS parameter whose value is expected to be stored
+            in the integer field.
+
+        Returns
+        -------
+        int
+            Parameter value as an int.
+
+        """
         return int(self.get_parameter(name).get_parameter_value().integer_value)
 
     def _get_float(self, name):
+        """
+        Read a floating-point ROS parameter.
+
+        Parameters
+        ----------
+        name : str
+            Name of a declared ROS parameter whose value is expected to be stored
+            in the floating-point field.
+
+        Returns
+        -------
+        float
+            Parameter value as a float.
+
+        """
         return float(self.get_parameter(name).get_parameter_value().double_value)
 
     def _camera_socket(self, parameter_name):
+        """
+        Resolve a DepthAI camera socket parameter with AUTO fallback.
+
+        Parameters
+        ----------
+        parameter_name : str
+            Name of the ROS parameter containing a DepthAI
+            ``CameraBoardSocket`` member name, such as ``CAM_A``.
+
+        Returns
+        -------
+        object
+            DepthAI ``CameraBoardSocket`` enum value, or ``AUTO`` when the
+            configured name is invalid.
+
+        """
         socket_name = self._get_str(parameter_name).upper()
         if not hasattr(dai.CameraBoardSocket, socket_name):
             self.get_logger().warning(
@@ -298,6 +375,15 @@ class HandLandmarksOakNode(Node):
         return getattr(dai.CameraBoardSocket, socket_name)
 
     def _stereo_preset(self):
+        """
+        Resolve the configured DepthAI stereo-depth preset.
+
+        Returns
+        -------
+        object
+            DepthAI StereoDepth preset enum value.
+
+        """
         preset_name = self._get_str('stereo_preset').upper()
         presets = dai.node.StereoDepth.PresetMode
         if not hasattr(presets, preset_name):
@@ -308,6 +394,7 @@ class HandLandmarksOakNode(Node):
         return getattr(presets, preset_name)
 
     def _build_and_start_pipeline(self):
+        """Create, configure, and start the OAK RGBD pipeline."""
         width, height = self.rgb_resolution
         self.pipeline = dai.Pipeline()
 
@@ -363,6 +450,7 @@ class HandLandmarksOakNode(Node):
         )
 
     def _capture_loop(self):
+        """Read synchronized OAK RGBD frames until shutdown."""
         while self.running and rclpy.ok():
             try:
                 message_group = self.sync_queue.get()
@@ -382,6 +470,19 @@ class HandLandmarksOakNode(Node):
                 self.get_logger().error(f'Error processing OAK RGBD frame: {exc}')
 
     def _process_rgbd_frame(self, rgb_msg, depth_msg):
+        """
+        Convert one OAK RGBD message group and run hand detection.
+
+        Parameters
+        ----------
+        rgb_msg : depthai.ImgFrame
+            DepthAI RGB frame message from the synchronized output group. It must
+            provide ``getCvFrame`` and a device timestamp.
+        depth_msg : depthai.ImgFrame
+            DepthAI depth frame message aligned to the RGB camera. Its
+            ``getFrame`` result is expected to contain depth in millimeters.
+
+        """
         cv_bgr = rgb_msg.getCvFrame()
         if cv_bgr is None:
             return
@@ -444,6 +545,21 @@ class HandLandmarksOakNode(Node):
         )
 
     def _on_live_stream_result(self, result, output_image, timestamp_ms: int):
+        """
+        Handle asynchronous MediaPipe results for a queued OAK frame.
+
+        Parameters
+        ----------
+        result : mediapipe.tasks.python.vision.HandLandmarkerResult
+            MediaPipe detection result for the queued OAK frame.
+        output_image : mediapipe.Image | None
+            MediaPipe callback image. The OAK path keeps its own visualization
+            frame in the queued context, so this parameter is intentionally unused.
+        timestamp_ms : int
+            MediaPipe timestamp used to recover the queued ROS header, depth frame,
+            visualization frame, and detection start time.
+
+        """
         with self._ts_lock:
             context = self._context_by_ts_ms.pop(timestamp_ms, None)
 
@@ -461,6 +577,22 @@ class HandLandmarksOakNode(Node):
         )
 
     def _next_timestamp_ms(self, rgb_msg) -> int:
+        """
+        Return a strictly increasing MediaPipe timestamp for an OAK frame.
+
+        Parameters
+        ----------
+        rgb_msg : depthai.ImgFrame
+            DepthAI RGB frame message with a device timestamp. If reading the
+            device timestamp fails, wall-clock time is used as a fallback.
+
+        Returns
+        -------
+        int
+            Strictly increasing timestamp in milliseconds for MediaPipe video and
+            live-stream APIs.
+
+        """
         try:
             timestamp = rgb_msg.getTimestamp()
             ts_ms = int(timestamp.total_seconds() * 1000.0)
@@ -474,11 +606,22 @@ class HandLandmarksOakNode(Node):
         return ts_ms
 
     def _trim_pending_timestamp_contexts(self):
+        """Drop old asynchronous OAK frame contexts beyond the limit."""
         while len(self._context_by_ts_ms) > self._max_pending_timestamps:
             oldest_key = next(iter(self._context_by_ts_ms))
             self._context_by_ts_ms.pop(oldest_key, None)
 
     def reset_reference_callback(self, msg: Bool):
+        """
+        Request 3D reference recentering on a true boolean signal.
+
+        Parameters
+        ----------
+        msg : std_msgs.msg.Bool
+            Reset command message. A true value queues recentering on the next
+            valid 3D hand, subject to ``reset_reference_cooldown_sec``.
+
+        """
         current_signal = bool(msg.data)
 
         if not current_signal:
@@ -508,6 +651,27 @@ class HandLandmarksOakNode(Node):
         cv_rgb_for_visualization,
         t_mediapipe,
     ):
+        """
+        Build, normalize, publish, and optionally visualize a detection result.
+
+        Parameters
+        ----------
+        result : mediapipe.tasks.python.vision.HandLandmarkerResult
+            Detection result returned by MediaPipe for the current RGB frame.
+        header : std_msgs.msg.Header
+            Header used for all ``PointCloud`` messages published from this frame.
+        ts_sec : float
+            Frame timestamp in seconds. The One Euro filters use this value as
+            their sample time when filtering is enabled.
+        depth_mm : numpy.ndarray
+            Depth image aligned to the RGB frame, with values in millimeters.
+        cv_rgb_for_visualization : numpy.ndarray | None
+            Optional OpenCV color frame used for overlay drawing. ``None`` skips
+            visualization while still allowing publishing.
+        t_mediapipe : float
+            MediaPipe processing duration in seconds for display and debug output.
+
+        """
         processed_metric_hands = []
         processed_image_hands = []
         missing_depth_count = 0
@@ -593,6 +757,31 @@ class HandLandmarksOakNode(Node):
                 self.frame_count = 0
 
     def _build_3d_hand_landmarks(self, hand_landmarks, depth_mm, ts_sec, hand_idx):
+        """
+        Back-project MediaPipe image landmarks into metric camera points.
+
+        Parameters
+        ----------
+        hand_landmarks : Sequence[object]
+            MediaPipe normalized landmarks for one hand. Each landmark must provide
+            normalized ``x`` and ``y`` image coordinates.
+        depth_mm : numpy.ndarray
+            Depth image aligned to the RGB frame, with values in millimeters.
+        ts_sec : float
+            Frame timestamp in seconds used by smoothing filters.
+        hand_idx : int
+            Hand slot index used to select per-hand filters and last-known depth
+            values for missing-depth recovery.
+
+        Returns
+        -------
+        tuple[list[Point32] | None, list[Point32] | None, int]
+            Metric camera-frame points in meters, normalized image-space points for
+            visualization/reference display, and the number of landmarks without a
+            direct depth sample. Point lists are ``None`` when the hand should be
+            skipped.
+
+        """
         height, width = depth_mm.shape[:2]
         sampled_depths = []
         missing_indices = []
@@ -652,6 +841,25 @@ class HandLandmarksOakNode(Node):
         return metric_hand, image_hand, len(missing_indices)
 
     def _sample_depth_m(self, depth_mm, u: int, v: int):
+        """
+        Sample a valid depth value near an image-space landmark.
+
+        Parameters
+        ----------
+        depth_mm : numpy.ndarray
+            Depth image in millimeters.
+        u : int
+            Landmark x pixel coordinate used as the center of the sampling window.
+        v : int
+            Landmark y pixel coordinate used as the center of the sampling window.
+
+        Returns
+        -------
+        float | None
+            Depth in meters from the configured percentile of valid samples, or
+            ``None`` when no sample falls inside the configured depth range.
+
+        """
         radius = self.depth_sample_radius_px
         height, width = depth_mm.shape[:2]
         x0 = max(0, u - radius)
@@ -670,6 +878,18 @@ class HandLandmarksOakNode(Node):
         return float(np.percentile(valid, self.depth_percentile)) * 0.001
 
     def _update_reference_if_needed(self, metric_hand, image_hand):
+        """
+        Initialize or recenter the 3D reference from the tracked landmark.
+
+        Parameters
+        ----------
+        metric_hand : Sequence[geometry_msgs.msg.Point32]
+            Current hand landmarks in metric RGB camera coordinates, in meters.
+        image_hand : Sequence[geometry_msgs.msg.Point32]
+            Current hand landmarks in normalized image coordinates. These are saved
+            only to display the reference marker at the matching image position.
+
+        """
         with self.reference_lock:
             should_auto_set = (
                 self.auto_reference_on_first_detection
@@ -713,6 +933,27 @@ class HandLandmarksOakNode(Node):
         missing_depth_count,
         t_mediapipe,
     ):
+        """
+        Render the OAK image overlay and process window-close keys.
+
+        Parameters
+        ----------
+        cv_rgb : numpy.ndarray
+            OpenCV color image to annotate. The caller passes the frame in display
+            color order expected by OpenCV.
+        image_hands : Sequence[Sequence[geometry_msgs.msg.Point32]]
+            Detected hands in normalized image coordinates, used to draw landmark
+            connections.
+        primary_metric_hand : Sequence[geometry_msgs.msg.Point32] | None
+            First valid hand in metric camera coordinates. ``None`` means no metric
+            hand was available for reference feedback.
+        missing_depth_count : int
+            Number of landmarks in the current result that did not have direct
+            valid depth samples.
+        t_mediapipe : float
+            MediaPipe processing duration in seconds.
+
+        """
         annotated = cv_rgb.copy()
         for image_hand in image_hands:
             draw_hand_on_image(annotated, image_hand)
@@ -751,6 +992,18 @@ class HandLandmarksOakNode(Node):
             rclpy.shutdown()
 
     def _draw_3d_reference_overlay(self, image, primary_metric_hand):
+        """
+        Draw metric 3D reference and control-zone feedback on the OAK image.
+
+        Parameters
+        ----------
+        image : numpy.ndarray
+            OpenCV image modified in place.
+        primary_metric_hand : Sequence[geometry_msgs.msg.Point32] | None
+            First valid hand in metric camera coordinates. ``None`` draws only the
+            stored reference marker and omits tracked-landmark feedback.
+
+        """
         with self.reference_lock:
             reference_metric = self.reference_position
             reference_image = self.reference_image_position
@@ -821,6 +1074,7 @@ class HandLandmarksOakNode(Node):
             )
 
     def destroy_node(self):
+        """Stop DepthAI, MediaPipe, and OpenCV resources before shutdown."""
         self.running = False
         try:
             if self.pipeline is not None:
@@ -842,6 +1096,15 @@ class HandLandmarksOakNode(Node):
 
 
 def main(args=None):
+    """
+    Run the OAK 3D hand landmarks ROS node.
+
+    Parameters
+    ----------
+    args : list[str] | None
+        Optional ROS command-line arguments passed through to ``rclpy.init``.
+
+    """
     rclpy.init(args=args)
     node = HandLandmarksOakNode()
     try:

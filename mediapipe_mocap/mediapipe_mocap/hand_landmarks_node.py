@@ -38,28 +38,29 @@ import numpy as np  # noqa: E402,I100
 
 class HandLandmarksNode(Node):
     """
-    Subscribe to RGB images and publish reference-relative hand landmarks.
+    Subscribe to RGB images and publish 2D hand-control inputs.
 
-    Output semantics (for the FIRST detected hand):
+    Output semantics for the first detected hand:
       - 21 points in fixed order (MediaPipe index 0..20)
-      - point.x/y/z = landmark position relative to the current hand reference
+      - point.x/y are reference-relative offsets scaled by frame dimensions
+      - point.z is 0.0; the 2D node does not publish MediaPipe's relative z
 
     header.frame_id and header.stamp are copied from the input Image.
     """
 
     def __init__(self):
+        """Initialize parameters, MediaPipe landmarker, and ROS interfaces."""
         super().__init__('hand_landmarks_node')
 
         # Get package share directory for default model path
         package_share_dir = get_package_share_directory('mediapipe_mocap')
         default_model_path = os.path.join(package_share_dir, 'models', 'hand_landmarker.task')
 
-        # print out the current venv
+        # Log active virtual environment for pip-installed MediaPipe debugging.
         self.get_logger().info(
             f"Using venv: {os.environ.get('VIRTUAL_ENV', 'Not in a virtual environment')}"
         )
 
-        # Declare parameters
         self.declare_parameters(
             namespace='',
             parameters=[
@@ -271,6 +272,17 @@ class HandLandmarksNode(Node):
     # Image callback: convert ROS image → MediaPipe Image → detect
     # -------------------------------------------------------------
     def image_callback(self, msg: Image):
+        """
+        Convert an RGB image message and submit it to MediaPipe.
+
+        Parameters
+        ----------
+        msg : sensor_msgs.msg.Image
+            RGB image message from the configured camera topic. Its header stamp is
+            converted to a MediaPipe timestamp and its full header is preserved on
+            the published landmark cloud.
+
+        """
         # Convert directly to RGB for MediaPipe. Only convert to BGR later when
         # the optional OpenCV visualization needs it.
         try:
@@ -327,6 +339,23 @@ class HandLandmarksNode(Node):
         )
 
     def _on_live_stream_result(self, result, output_image, timestamp_ms: int):
+        """
+        Handle asynchronous MediaPipe results and restore ROS context.
+
+        Parameters
+        ----------
+        result : mediapipe.tasks.python.vision.HandLandmarkerResult
+            MediaPipe detection result for the image associated with
+            ``timestamp_ms``.
+        output_image : mediapipe.Image | None
+            Optional image returned by MediaPipe in live-stream mode. When
+            visualization is enabled, it is copied and converted for OpenCV
+            drawing.
+        timestamp_ms : int
+            MediaPipe timestamp key used to recover the stored ROS header and
+            detection start time.
+
+        """
         with self._ts_lock:
             header = self._header_by_ts_ms.pop(timestamp_ms, None)
             detect_start = self._detect_start_by_ts_ms.pop(timestamp_ms, None)
@@ -356,6 +385,23 @@ class HandLandmarksNode(Node):
         )
 
     def _next_timestamp_ms(self, msg: Image) -> int:
+        """
+        Return a strictly increasing MediaPipe timestamp in milliseconds.
+
+        Parameters
+        ----------
+        msg : sensor_msgs.msg.Image
+            Input image whose header stamp provides the source time. If that stamp
+            does not increase monotonically, the returned timestamp is advanced by
+            one millisecond.
+
+        Returns
+        -------
+        int
+            Strictly increasing timestamp accepted by MediaPipe's video and
+            live-stream APIs.
+
+        """
         ts_ms = int(msg.header.stamp.sec) * 1000 + int(msg.header.stamp.nanosec) // 1_000_000
         with self._ts_lock:
             if ts_ms <= self._last_ts_ms:
@@ -364,6 +410,16 @@ class HandLandmarksNode(Node):
         return ts_ms
 
     def reset_reference_callback(self, msg: Bool):
+        """
+        Request reference recentering on a rising boolean signal.
+
+        Parameters
+        ----------
+        msg : std_msgs.msg.Bool
+            Reset command message. A false-to-true transition queues recentering on
+            the next detected hand, subject to ``reset_reference_cooldown_sec``.
+
+        """
         current_signal = bool(msg.data)
         rising_edge = current_signal and not self.last_reset_reference_signal
         self.last_reset_reference_signal = current_signal
@@ -389,6 +445,7 @@ class HandLandmarksNode(Node):
         )
 
     def _trim_pending_timestamp_maps(self):
+        """Drop old async MediaPipe timestamp contexts beyond the limit."""
         while len(self._header_by_ts_ms) > self._max_pending_timestamps:
             # Dict preserves insertion order; pop the oldest pending timestamp first.
             oldest_key = next(iter(self._header_by_ts_ms))
@@ -396,6 +453,20 @@ class HandLandmarksNode(Node):
             self._detect_start_by_ts_ms.pop(oldest_key, None)
 
     def _update_reference_if_needed(self, processed_hand_landmarks, header):
+        """
+        Recenter the reference on the tracked landmark when requested.
+
+        Parameters
+        ----------
+        processed_hand_landmarks : list[list[geometry_msgs.msg.Point32]]
+            Detected hands after optional filtering. Coordinates are normalized
+            image-space x/y values with planar ``z = 0``.
+        header : std_msgs.msg.Header
+            Header for the current image frame. The parameter keeps the method
+            signature aligned with result handling even though the recentering
+            state currently uses only landmark coordinates.
+
+        """
         # Extract first hand's landmarks
         first_hand = processed_hand_landmarks[0]
         with self.reference_lock:
@@ -419,7 +490,27 @@ class HandLandmarksNode(Node):
                 )
 
     def _handle_result(self, result, header, ts_sec: float, cv_bgr_for_visualization, t_mediapipe):
+        """
+        Publish processed hand landmarks and update optional visualization.
 
+        Parameters
+        ----------
+        result : mediapipe.tasks.python.vision.HandLandmarkerResult
+            Detection result returned by MediaPipe for the current image.
+        header : std_msgs.msg.Header
+            Header copied to the published ``PointCloud`` so consumers can trace
+            landmarks back to the source image.
+        ts_sec : float
+            Source timestamp in seconds. The One Euro filters use this value as
+            their sample time when filtering is enabled.
+        cv_bgr_for_visualization : numpy.ndarray | None
+            Optional BGR image used for the OpenCV overlay. ``None`` skips
+            visualization even when the node is otherwise running normally.
+        t_mediapipe : float | None
+            MediaPipe processing duration in seconds. ``None`` means no timing was
+            available for this result path.
+
+        """
         processed_hand_landmarks = []
         if result.hand_landmarks:
             hands_to_process = (
@@ -432,8 +523,8 @@ class HandLandmarksNode(Node):
                 for i, lm in enumerate(hand_landmarks):
                     x = float(lm.x)
                     y = float(lm.y)
-                    z = 0.
-                    # z = float(lm.z)
+                    # Keep the 2D node planar; the OAK path handles metric depth.
+                    z = 0.0
                     if self.enable_one_euro_filter and hand_idx < len(self.one_euro_filters):
                         hand_filters = self.one_euro_filters[hand_idx]
                         base_idx = i * 3
@@ -516,6 +607,7 @@ class HandLandmarksNode(Node):
                 self.frame_count = 0
 
     def destroy_node(self):
+        """Close MediaPipe and OpenCV resources before node shutdown."""
         # Cleanly close MediaPipe resources
         try:
             self.landmarker.close()
@@ -530,6 +622,15 @@ class HandLandmarksNode(Node):
 
 
 def main(args=None):
+    """
+    Run the 2D hand landmarks ROS node.
+
+    Parameters
+    ----------
+    args : list[str] | None
+        Optional ROS command-line arguments passed through to ``rclpy.init``.
+
+    """
     rclpy.init(args=args)
     node = HandLandmarksNode()
     try:
