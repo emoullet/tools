@@ -56,7 +56,8 @@ class HandLandmarksOakNode(Node):
         default_model_path = os.path.join(package_share_dir, 'models', 'hand_landmarker.task')
 
         # print out the current venv
-        self.get_logger().info(f"Using venv: {os.environ.get('VIRTUAL_ENV', 'Not in a virtual environment')}")
+        virtual_env = os.environ.get('VIRTUAL_ENV', 'Not in a virtual environment')
+        self.get_logger().info(f'Using venv: {virtual_env}')
 
         self.declare_parameters(
             namespace='',
@@ -70,7 +71,8 @@ class HandLandmarksOakNode(Node):
                 ('min_tracking_confidence', 0.5),
                 ('running_mode', 'LIVE_STREAM'),
                 ('camera_frame_id', 'oak_rgb_camera_optical_frame'),
-                ('rgb_size', [640, 400]),
+                ('rgb_width', 640),
+                ('rgb_height', 400),
                 ('fps', 30.0),
                 ('rgb_socket', 'CAM_A'),
                 ('left_socket', 'CAM_B'),
@@ -92,7 +94,6 @@ class HandLandmarksOakNode(Node):
                 ('publish_normalized_landmarks', True),
                 ('normalization_mode', 'axis'),
                 ('saturation_zone', 0.4),
-                ('saturation_zone_xyz', [0.4, 0.4, 0.4]),
                 ('dead_zone', 0.05),
                 ('tracked_landmark_index', 0),
                 ('initial_reference', [0.0, 0.0, 0.6]),
@@ -114,7 +115,10 @@ class HandLandmarksOakNode(Node):
         self.model_path = self._get_str('model_path') or default_model_path
         self.num_hands = max(1, self._get_int('num_hands'))
         self.camera_frame_id = self._get_str('camera_frame_id')
-        self.rgb_size = self._get_int_pair('rgb_size', (640, 400))
+        self.rgb_resolution = (
+            max(1, self._get_int('rgb_width')),
+            max(1, self._get_int('rgb_height')),
+        )
         self.fps = max(1e-3, self._get_float('fps'))
         self.depth_sample_radius_px = max(0, self._get_int('depth_sample_radius_px'))
         self.min_depth_m = max(0.0, self._get_float('min_depth_m'))
@@ -136,7 +140,6 @@ class HandLandmarksOakNode(Node):
             )
             self.normalization_mode = 'axis'
         self.saturation_zone = max(1e-6, self._get_float('saturation_zone'))
-        self.saturation_zone_xyz = self._get_saturation_xyz()
         self.dead_zone = max(0.0, self._get_float('dead_zone'))
         self.tracked_landmark_index = self._get_int('tracked_landmark_index')
         self.auto_reference_on_first_detection = self._get_bool(
@@ -261,9 +264,10 @@ class HandLandmarksOakNode(Node):
             f'  raw_topic        = {self.raw_landmarks_topic or "<disabled>"}\n'
             f'  model_path       = {self.model_path}\n'
             f'  running_mode     = {running_mode_param}\n'
-            f'  rgb_size/fps     = {self.rgb_size[0]}x{self.rgb_size[1]} @ {self.fps:.1f}\n'
+            f'  rgb/fps          = {self.rgb_resolution[0]}x'
+            f'{self.rgb_resolution[1]} @ {self.fps:.1f}\n'
             f'  normalized       = {self.publish_normalized_landmarks} '
-            f'({self.normalization_mode}, sat={self.saturation_zone_xyz})\n'
+            f'({self.normalization_mode}, sat={self.saturation_zone:.3f})\n'
             f'  depth_range      = [{self.min_depth_m:.2f}, {self.max_depth_m:.2f}] m '
             f'radius={self.depth_sample_radius_px}px\n'
             f'  reset_reference  = {self.reset_reference_topic} '
@@ -283,27 +287,6 @@ class HandLandmarksOakNode(Node):
 
     def _get_float(self, name):
         return float(self.get_parameter(name).get_parameter_value().double_value)
-
-    def _get_int_pair(self, name, fallback):
-        param = self.get_parameter(name).get_parameter_value()
-        values = list(param.integer_array_value)
-        if len(values) < 2:
-            double_values = list(param.double_array_value)
-            values = [int(round(v)) for v in double_values]
-        if len(values) < 2:
-            self.get_logger().warning(
-                f"Parameter '{name}' must contain [width, height]. Falling back to {fallback}."
-            )
-            return fallback
-        return (max(1, int(values[0])), max(1, int(values[1])))
-
-    def _get_saturation_xyz(self):
-        values = list(
-            self.get_parameter('saturation_zone_xyz').get_parameter_value().double_array_value
-        )
-        if len(values) < 3:
-            values = [self.saturation_zone, self.saturation_zone, self.saturation_zone]
-        return tuple(max(1e-6, float(value)) for value in values[:3])
 
     def _camera_socket(self, parameter_name):
         socket_name = self._get_str(parameter_name).upper()
@@ -325,7 +308,7 @@ class HandLandmarksOakNode(Node):
         return getattr(presets, preset_name)
 
     def _build_and_start_pipeline(self):
-        width, height = self.rgb_size
+        width, height = self.rgb_resolution
         self.pipeline = dai.Pipeline()
 
         rgb_socket = self._camera_socket('rgb_socket')
@@ -347,12 +330,12 @@ class HandLandmarksOakNode(Node):
         stereo.setRectifyEdgeFillColor(self._get_int('stereo_rectify_edge_fill_color'))
 
         color.requestOutput(
-            self.rgb_size,
+            self.rgb_resolution,
             dai.ImgFrame.Type.BGR888i,
             fps=self.fps,
         ).link(sync.inputs['rgb'])
-        left.requestOutput(self.rgb_size, fps=self.fps).link(stereo.left)
-        right.requestOutput(self.rgb_size, fps=self.fps).link(stereo.right)
+        left.requestOutput(self.rgb_resolution, fps=self.fps).link(stereo.left)
+        right.requestOutput(self.rgb_resolution, fps=self.fps).link(stereo.right)
         stereo.depth.link(sync.inputs['depth'])
 
         sync.setRunOnHost(self._get_bool('sync_run_on_host'))
@@ -367,8 +350,8 @@ class HandLandmarksOakNode(Node):
         calibration = self.pipeline.getDefaultDevice().readCalibration()
         intrinsics = calibration.getCameraIntrinsics(
             rgb_socket,
-            self.rgb_size[0],
-            self.rgb_size[1],
+            self.rgb_resolution[0],
+            self.rgb_resolution[1],
         )
         self.fx = float(intrinsics[0][0])
         self.fy = float(intrinsics[1][1])
@@ -572,7 +555,7 @@ class HandLandmarksOakNode(Node):
                 if self.publish_normalized_landmarks:
                     published_points = normalized_control_points(
                         relative_landmarks,
-                        self.saturation_zone_xyz,
+                        self.saturation_zone,
                         self.normalization_mode,
                     )
                 else:
@@ -759,10 +742,10 @@ class HandLandmarksOakNode(Node):
             2,
         )
         self._draw_3d_reference_overlay(annotated, primary_metric_hand)
-        
+
         cv2.imshow(self.window_name, annotated)
         key = cv2.waitKey(1)
-        
+
         if key == 27 or key == ord('q'):
             self.get_logger().info('Visualization window closed by user.')
             rclpy.shutdown()
@@ -796,7 +779,7 @@ class HandLandmarksOakNode(Node):
 
         if self.show_control_zones:
             ref_z = max(abs(reference_metric[2]), 1e-6)
-            sat_radius_px = max(1, int(self.fx * self.saturation_zone_xyz[0] / ref_z))
+            sat_radius_px = max(1, int(self.fx * self.saturation_zone / ref_z))
             cv2.circle(image, (x_px, y_px), sat_radius_px, (255, 128, 0), 2, cv2.LINE_AA)
 
         cv2.putText(
@@ -811,8 +794,7 @@ class HandLandmarksOakNode(Node):
         )
         cv2.putText(
             image,
-            f'SAT m: ({self.saturation_zone_xyz[0]:.2f}, '
-            f'{self.saturation_zone_xyz[1]:.2f}, {self.saturation_zone_xyz[2]:.2f})',
+            f'SAT m: {self.saturation_zone:.2f} ({self.normalization_mode})',
             (10, 145),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.7,

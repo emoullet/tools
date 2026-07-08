@@ -1,15 +1,13 @@
-import rclpy
-from rclpy.node import Node
-
-from sensor_msgs.msg import Image, PointCloud
-from geometry_msgs.msg import Point32
-from cv_bridge import CvBridge
-
-import cv2
-import numpy as np
-import threading
 import os
 import sys
+import threading
+
+import cv2
+from cv_bridge import CvBridge
+import numpy as np
+import rclpy
+from rclpy.node import Node
+from sensor_msgs.msg import Image, PointCloud
 
 
 def _add_venv_site_packages_to_path():
@@ -44,8 +42,8 @@ def _add_venv_site_packages_to_path():
 
 _add_venv_site_packages_to_path()
 
-import mediapipe as mp
-from mediapipe.framework.formats import landmark_pb2
+import mediapipe as mp  # noqa: E402,I100
+from mediapipe.framework.formats import landmark_pb2  # noqa: E402,I100
 
 # MediaPipe drawing utilities
 solutions = mp.solutions
@@ -53,11 +51,11 @@ solutions = mp.solutions
 
 class HandLandmarksViewer(Node):
     """
+    Display images with hand landmarks overlaid using OpenCV.
+
     Subscribe to:
       - /camera/color/image_raw (sensor_msgs/Image)
       - /hand_landmarks (sensor_msgs/PointCloud, 21 normalized points)
-
-    Display the current image with landmarks overlaid using OpenCV.
     """
 
     def __init__(self):
@@ -164,7 +162,6 @@ class HandLandmarksViewer(Node):
             solutions.drawing_styles.get_default_hand_landmarks_style(),
             solutions.drawing_styles.get_default_hand_connections_style()
         )
-
 
         return annotated_image
 

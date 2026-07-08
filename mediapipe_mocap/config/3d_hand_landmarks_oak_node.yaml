@@ -10,7 +10,8 @@ hand_landmarks_oak_3d_node:
     running_mode: "LIVE_STREAM"
 
     camera_frame_id: "oak_rgb_camera_optical_frame"
-    rgb_size: [640, 400]
+    rgb_width: 640
+    rgb_height: 400
     fps: 50.0
     rgb_socket: "CAM_A"
     left_socket: "CAM_B"
@@ -34,7 +35,6 @@ hand_landmarks_oak_3d_node:
     publish_normalized_landmarks: true
     normalization_mode: "axis"  # Options: axis, vector
     saturation_zone: 0.4
-    saturation_zone_xyz: [0.4, 0.4, 0.4]
     dead_zone: 0.05
     tracked_landmark_index: 0
     initial_reference: [0.0, 0.0, 0.6]

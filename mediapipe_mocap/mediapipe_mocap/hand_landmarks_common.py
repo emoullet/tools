@@ -154,21 +154,18 @@ def relative_points(
 
 def normalized_control_points(
     points: Sequence[Point32],
-    saturation_xyz,
+    saturation_zone: float,
     mode: str = 'axis',
 ):
     mode = str(mode).lower()
     if mode == 'vector':
-        # Use one scalar radius for the whole vector; the first component is the
-        # canonical saturation when a per-axis tuple was supplied.
-        return [saturate_vector_norm(pt, saturation_xyz[0]) for pt in points]
+        return [saturate_vector_norm(pt, saturation_zone) for pt in points]
 
-    sat_x, sat_y, sat_z = saturation_xyz
     return [
         Point32(
-            x=saturate_axis(pt.x, sat_x),
-            y=saturate_axis(pt.y, sat_y),
-            z=saturate_axis(pt.z, sat_z),
+            x=saturate_axis(pt.x, saturation_zone),
+            y=saturate_axis(pt.y, saturation_zone),
+            z=saturate_axis(pt.z, saturation_zone),
         )
         for pt in points
     ]
@@ -205,8 +202,8 @@ def draw_reference_overlay(
     tracked_landmark_index: int = 0,
     show_control_zones: bool = True,
     dead_zone: float = 0.0,
-    saturation_xyz=(0.3, 0.3, 0.3),
-    label='SAT_XYZ',
+    saturation_zone: float = 0.3,
+    label='SAT',
 ):
     import cv2
 
@@ -237,17 +234,16 @@ def draw_reference_overlay(
         2,
     )
 
-    sat_x, sat_y, sat_z = saturation_xyz
     if show_control_zones:
         dead_radius_px = max(1, int(float(dead_zone) * min(width, height)))
         cv2.circle(image, (x_px, y_px), dead_radius_px, (0, 255, 255), 2, cv2.LINE_AA)
 
-        sat_radius_px = max(1, int(float(sat_x) * min(width, height)))
+        sat_radius_px = max(1, int(float(saturation_zone) * min(width, height)))
         cv2.circle(image, (x_px, y_px), sat_radius_px, (255, 128, 0), 2, cv2.LINE_AA)
 
         cv2.putText(
             image,
-            f'DZ: {dead_zone:.2f}  {label}: ({sat_x:.2f}, {sat_y:.2f}, {sat_z:.2f})',
+            f'DZ: {dead_zone:.2f}  {label}: {saturation_zone:.2f}',
             (10, 145),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.7,
@@ -264,9 +260,9 @@ def draw_reference_overlay(
         dz = float(lm.z) - z_norm
 
         in_dead_zone = (dx * dx + dy * dy + dz * dz) ** 0.5 < float(dead_zone)
-        x_sat = abs(dx) >= float(sat_x)
-        y_sat = abs(dy) >= float(sat_y)
-        z_sat = abs(dz) >= float(sat_z)
+        x_sat = abs(dx) >= float(saturation_zone)
+        y_sat = abs(dy) >= float(saturation_zone)
+        z_sat = abs(dz) >= float(saturation_zone)
 
         cv2.circle(image, (lm_x, lm_y), 7, (0, 0, 255), 2, cv2.LINE_AA)
         cv2.line(image, (x_px, y_px), (lm_x, lm_y), (255, 0, 255), 1, cv2.LINE_AA)
