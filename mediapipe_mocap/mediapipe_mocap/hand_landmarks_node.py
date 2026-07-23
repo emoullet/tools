@@ -17,6 +17,7 @@ from mediapipe_mocap.hand_landmarks_common import (
     reset_filter_bank,
     timestamp_sec_from_header,
 )
+from mediapipe_mocap.ros_qos import latest_reliable_qos
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, PointCloud
@@ -197,7 +198,7 @@ class HandLandmarksNode(Node):
             Image,
             image_topic,
             self.image_callback,
-            20
+            latest_reliable_qos(),
         )
         self.reset_reference_sub = self.create_subscription(
             Bool,

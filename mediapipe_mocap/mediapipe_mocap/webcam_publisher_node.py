@@ -3,6 +3,7 @@ from cv_bridge import CvBridge
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image
+from mediapipe_mocap.ros_qos import latest_reliable_qos
 
 
 class WebcamPublisher(Node):
@@ -26,7 +27,11 @@ class WebcamPublisher(Node):
         self.selfie_mode = self.get_parameter('selfie_mode').get_parameter_value().bool_value
 
         self.bridge = CvBridge()
-        self.publisher = self.create_publisher(Image, '/camera/color/image_raw', 10)
+        self.publisher = self.create_publisher(
+            Image, 
+            '/camera/color/image_raw', 
+            latest_reliable_qos(),
+            )
 
         # Open webcam
         self.cap = cv2.VideoCapture(camera_id)
