@@ -290,26 +290,6 @@ ros2 launch mediapipe_mocap oak_hand_landmarks_launch.py
 | `saturation_zone` | 0.4 | XYZ saturation distance used by normalization and feedback overlay |
 | `landmark_index` | 0 | Tracked landmark index (0-20) for OAK feedback overlay |
 
-### webcam_hand_landmarks_launch.py
-Complete pipeline: captures video from a USB/integrated webcam, detects hand landmarks, and displays results.
-
-```bash
-ros2 launch mediapipe_mocap webcam_hand_landmarks_launch.py
-```
-
-**Parameters:**
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `camera_id` | 0 | Camera device ID (0 = primary webcam) |
-| `fps` | 0 | Publishing rate in Hz (0 = use native camera FPS) |
-| `frame_width` | 0 | Frame width in pixels (0 = use native camera width) |
-| `frame_height` | 0 | Frame height in pixels (0 = use native camera height) |
-
-**Example with custom parameters:**
-```bash
-ros2 launch mediapipe_mocap webcam_hand_landmarks_launch.py camera_id:=1 fps:=60 frame_width:=1280 frame_height:=720
-```
-
 ### usb_cam_hand_landmarks_launch.py
 Complete pipeline using the maintained ROS 2 `usb_cam` driver. The raw camera
 topic remains unmirrored; selfie mirroring is applied only inside the hand
@@ -351,57 +331,6 @@ Processes video files from a directory. Requires the `offline_media_publisher` p
 ```bash
 ros2 launch mediapipe_mocap test_offline_video_hand_landmarks_launch.py folder_path:=/path/to/videos fps:=30
 ```
-
-## Webcam Publisher Node
-
-The `webcam_publisher` node captures frames from a USB or integrated webcam and publishes them as ROS 2 Image messages. It runs standalone or can be used with any image processing pipeline.
-
-**Executable:** `webcam_publisher`
-
-**Published Topics:**
-- `/camera/color/image_raw` (`sensor_msgs/Image`) - RGB image frames
-
-**Parameters:**
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `camera_id` | int | 0 | Camera device ID |
-| `fps` | int | 0 | Capture rate in Hz (0 = use native camera FPS) |
-| `frame_width` | int | 0 | Frame width in pixels (0 = use native camera width) |
-| `frame_height` | int | 0 | Frame height in pixels (0 = use native camera height) |
-
-**Configuration file:** `config/webcam_publisher.yaml`
-
-**Finding available camera IDs:**
-
-```bash
-sudo apt install v4l-utils
-v4l2-ctl --list-devices
-```
-
-Example output:
-```
-Integrated Camera (usb-0000:00:1a.0-1.6):
-        /dev/video0
-        /dev/video1
-
-USB Webcam (usb-0000:00:1d.0-1.2):
-        /dev/video2
-        /dev/video3
-```
-
-The integer after `/dev/video` is the `camera_id` to use (e.g., `camera_id:=2`).
-
-**Run standalone:**
-```bash
-ros2 run mediapipe_mocap webcam_publisher
-```
-
-**With custom parameters:**
-```bash
-ros2 run mediapipe_mocap webcam_publisher --ros-args -p camera_id:=1 -p fps:=60
-```
-
-
 
 ## Building
 

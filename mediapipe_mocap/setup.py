@@ -13,13 +13,11 @@ setup(
         ('share/' + package_name + '/launch', [
             'launch/hand_landmarks_launch.py',
             'launch/test_offline_video_hand_landmarks_launch.py',
-            'launch/webcam_hand_landmarks_launch.py',
             'launch/usb_cam_hand_landmarks_launch.py',
             'launch/oak_hand_landmarks_launch.py',
         ]),
         ('share/' + package_name + '/config', [
             'config/hand_landmarks_node.yaml',
-            'config/webcam_publisher.yaml',
             'config/usb_cam.yaml',
             'config/3d_hand_landmarks_oak_node.yaml',
         ]),
@@ -36,7 +34,6 @@ setup(
         'console_scripts': [
             'hand_landmarks_node = mediapipe_mocap.hand_landmarks_node:main',
             '3d_hand_landmarks_oak_node = mediapipe_mocap.3d_hand_landmarks_oak_node:main',
-            'webcam_publisher = mediapipe_mocap.webcam_publisher_node:main',
         ],
     },
 )
