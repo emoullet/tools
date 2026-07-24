@@ -72,6 +72,7 @@ class HandLandmarksNode(Node):
                 ('min_hand_presence_confidence', 0.5),
                 ('min_tracking_confidence', 0.5),
                 ('running_mode', 'VIDEO'),
+                ('selfie_mode', False),
                 ('enable_one_euro_filter', False),
                 ('one_euro_frequency', 30.0),
                 ('one_euro_mincutoff', 1.0),
@@ -118,6 +119,9 @@ class HandLandmarksNode(Node):
             RunningMode.LIVE_STREAM
             if running_mode_param == 'LIVE_STREAM'
             else RunningMode.VIDEO
+        )
+        self.selfie_mode = (
+            self.get_parameter('selfie_mode').get_parameter_value().bool_value
         )
         self.enable_one_euro_filter = (
             self.get_parameter('enable_one_euro_filter').get_parameter_value().bool_value
@@ -247,6 +251,7 @@ class HandLandmarksNode(Node):
             f'  landmarks_topic  = {landmarks_topic}\n'
             f'  model_path       = {model_path}\n'
             f'  running_mode     = {running_mode_param}\n'
+            f'  selfie_mode      = {self.selfie_mode}\n'
             f'  prime_offload    = '
             f"{os.environ.get('__NV_PRIME_RENDER_OFFLOAD', '<unset>')} "
             f"glx_vendor={os.environ.get('__GLX_VENDOR_LIBRARY_NAME', '<unset>')}\n"
@@ -294,6 +299,9 @@ class HandLandmarksNode(Node):
         except Exception as e:
             self.get_logger().error(f'Error converting RGB image: {e}')
             return
+
+        if self.selfie_mode:
+            cv_rgb = cv2.flip(cv_rgb, 1)
 
         if self.frame_size is None:
             self.frame_size = (cv_rgb.shape[1], cv_rgb.shape[0])

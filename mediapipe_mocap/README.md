@@ -106,14 +106,29 @@ This package provides two hand tracking workflows:
    > If you need scipy compatibility, pin numpy: `pip install "numpy<2"` before installing mediapipe
    > (mediapipe 0.10.x accepts numpy 1.x too).
 
-2. Rebuild the package **with the venv active**:
+2. Install the ROS 2 USB camera driver:
+
+   ```bash
+   sudo apt update
+   sudo apt install ros-$ROS_DISTRO-usb-cam
+   ```
+
+   Verify that the package is available:
+
+   ```bash
+   ros2 pkg executables usb_cam
+   ```
+
+   The output should include `usb_cam usb_cam_node_exe`.
+
+3. Rebuild the package **with the venv active**:
 
    ```bash
    source .venv_mediapipe/bin/activate
    colcon build --packages-select mediapipe_mocap --symlink-install
    ```
 
-3. The MediaPipe hand landmarker model is **provided by default** in the
+4. The MediaPipe hand landmarker model is **provided by default** in the
    `models/` folder of this package and automatically resolved at runtime.
 
 ### Running the Node
@@ -295,6 +310,42 @@ ros2 launch mediapipe_mocap webcam_hand_landmarks_launch.py
 ros2 launch mediapipe_mocap webcam_hand_landmarks_launch.py camera_id:=1 fps:=60 frame_width:=1280 frame_height:=720
 ```
 
+### usb_cam_hand_landmarks_launch.py
+Complete pipeline using the maintained ROS 2 `usb_cam` driver. The raw camera
+topic remains unmirrored; selfie mirroring is applied only inside the hand
+landmarks detector.
+
+```bash
+ros2 launch mediapipe_mocap usb_cam_hand_landmarks_launch.py
+```
+
+Camera defaults are loaded from `config/usb_cam.yaml`. Leave an override empty
+to use the YAML value.
+
+**Parameters:**
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `usb_cam_params_file` | package `config/usb_cam.yaml` | usb_cam YAML parameter file |
+| `hand_landmarks_params_file` | package `config/hand_landmarks_node.yaml` | Detector YAML parameter file |
+| `video_device` | empty | Override the YAML video device, such as `/dev/video1` |
+| `framerate` | empty | Override the YAML camera frame rate |
+| `image_width` | empty | Override the YAML image width |
+| `image_height` | empty | Override the YAML image height |
+| `pixel_format` | empty | Override the YAML usb_cam pixel format |
+| `frame_id` | empty | Override the YAML camera frame ID |
+| `image_topic` | `/camera/color/image_raw` | Raw image topic published by usb_cam and consumed by the detector |
+| `selfie_mode` | true | Mirror frames inside the detector |
+
+**Example with custom parameters:**
+```bash
+ros2 launch mediapipe_mocap usb_cam_hand_landmarks_launch.py \
+  video_device:=/dev/video1 \
+  framerate:=60.0 \
+  image_width:=1280 \
+  image_height:=720 \
+  pixel_format:=mjpeg2rgb
+```
+
 ### test_offline_video_hand_landmarks_launch.py
 Processes video files from a directory. Requires the `offline_media_publisher` package:
 ```bash
@@ -366,6 +417,7 @@ source install/setup.bash
 - ROS 2 (Humble or later)
 - OpenCV
 - cv_bridge
+- usb_cam
 - MediaPipe (Python, pip-installed in `.venv_mediapipe`)
 - DepthAI (Python, pip-installed in `.venv_mediapipe`, for OAK-D S2 RGBD tracking)
 - NumPy
