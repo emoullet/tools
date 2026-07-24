@@ -49,7 +49,8 @@ Motion capture using Google MediaPipe. Detects and tracks landmarks from RGB cam
 
 **Components**:
 - `hand_landmarks_node`: Detects hand landmarks from an image using mediapipe
-- `viewer_node`: Display the landmarks from mediapipe
+- `3d_hand_landmarks_oak_node`: Detects metric hand landmarks with an OAK camera
+- `HandLandmarksViewer`: Shared Python visualization library used by landmark nodes
 
 ### offline_media_publisher
 **Package**: `offline_media_publisher`
@@ -103,5 +104,4 @@ When adding new tools:
 ## License
 
 TODO: Add license information
-
 

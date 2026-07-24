@@ -12,7 +12,6 @@ from sensor_msgs.msg import PointCloud
 from std_msgs.msg import Bool, Header
 
 from mediapipe_mocap.hand_landmarks_common import (  # noqa: I100
-    draw_hand_on_image,
     ensure_3_tuple,
     get_best_mediapipe_delegate,
     normalized_control_points,
@@ -21,6 +20,7 @@ from mediapipe_mocap.hand_landmarks_common import (  # noqa: I100
     relative_points,
     reset_filter_bank,
 )
+from mediapipe_mocap.viewer import HandLandmarksViewer
 
 
 prepare_runtime_imports()
@@ -153,6 +153,11 @@ class HandLandmarksOakNode(Node):
         )
         self.visualize = self._get_bool('visualize')
         self.window_name = self._get_str('window_name')
+        self.viewer = (
+            HandLandmarksViewer(self.window_name)
+            if self.visualize
+            else None
+        )
         self.show_control_zones = self._get_bool('show_control_zones')
         self.enable_one_euro_filter = self._get_bool('enable_one_euro_filter')
 
@@ -250,8 +255,7 @@ class HandLandmarksOakNode(Node):
             [None for _ in range(21)]
             for _ in range(self.num_hands)
         ]
-        self.last_time = time.time()
-        self.last_debug_time = self.last_time
+        self.last_debug_time = time.time()
         self.frame_count = 0
 
         self._build_and_start_pipeline()
@@ -954,124 +958,30 @@ class HandLandmarksOakNode(Node):
             MediaPipe processing duration in seconds.
 
         """
-        annotated = cv_rgb.copy()
-        for image_hand in image_hands:
-            draw_hand_on_image(annotated, image_hand)
-
-        now = time.time()
-        elapsed = now - self.last_time
-        if elapsed > 0:
-            fps = 1.0 / elapsed
-            cv2.putText(
-                annotated,
-                f'FPS: {fps:.1f}',
-                (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1,
-                (0, 255, 0),
-                2,
-            )
-            self.last_time = now
-
-        cv2.putText(
-            annotated,
-            f'MP: {t_mediapipe * 1000.0:.1f}ms  missing depth: {missing_depth_count}',
-            (10, 70),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
-            (0, 255, 0),
-            2,
-        )
-        self._draw_3d_reference_overlay(annotated, primary_metric_hand)
-
-        cv2.imshow(self.window_name, annotated)
-        key = cv2.waitKey(1)
-
-        if key == 27 or key == ord('q'):
-            self.get_logger().info('Visualization window closed by user.')
-            rclpy.shutdown()
-
-    def _draw_3d_reference_overlay(self, image, primary_metric_hand):
-        """
-        Draw metric 3D reference and control-zone feedback on the OAK image.
-
-        Parameters
-        ----------
-        image : numpy.ndarray
-            OpenCV image modified in place.
-        primary_metric_hand : Sequence[geometry_msgs.msg.Point32] | None
-            First valid hand in metric camera coordinates. ``None`` draws only the
-            stored reference marker and omits tracked-landmark feedback.
-
-        """
         with self.reference_lock:
             reference_metric = self.reference_position
             reference_image = self.reference_image_position
             reference_initialized = self.reference_initialized
 
-        if not reference_initialized or reference_metric is None:
-            return
-
-        height, width = image.shape[:2]
-        if reference_image is not None:
-            x_px = int(np.clip(reference_image[0], 0.0, 1.0) * width)
-            y_px = int(np.clip(reference_image[1], 0.0, 1.0) * height)
-        else:
-            x_px = int(width * 0.5)
-            y_px = int(height * 0.5)
-
-        cv2.drawMarker(
-            image,
-            (x_px, y_px),
-            (255, 0, 255),
-            markerType=cv2.MARKER_CROSS,
-            markerSize=16,
-            thickness=2,
-            line_type=cv2.LINE_AA,
+        exit_requested = self.viewer.show_3d(
+            cv_rgb,
+            image_hands,
+            primary_metric_hand=primary_metric_hand,
+            missing_depth_count=missing_depth_count,
+            mediapipe_time_sec=t_mediapipe,
+            reference_metric=reference_metric,
+            reference_image=reference_image,
+            reference_initialized=reference_initialized,
+            tracked_landmark_index=self.tracked_landmark_index,
+            show_control_zones=self.show_control_zones,
+            dead_zone=self.dead_zone,
+            saturation_zone=self.saturation_zone,
+            normalization_mode=self.normalization_mode,
+            focal_length_px=self.fx,
         )
-
-        if self.show_control_zones:
-            ref_z = max(abs(reference_metric[2]), 1e-6)
-            sat_radius_px = max(1, int(self.fx * self.saturation_zone / ref_z))
-            cv2.circle(image, (x_px, y_px), sat_radius_px, (255, 128, 0), 2, cv2.LINE_AA)
-
-        cv2.putText(
-            image,
-            f'Ref3D: ({reference_metric[0]:.2f}, {reference_metric[1]:.2f}, '
-            f'{reference_metric[2]:.2f}) m',
-            (10, 110),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
-            (255, 0, 255),
-            2,
-        )
-        cv2.putText(
-            image,
-            f'SAT m: {self.saturation_zone:.2f} ({self.normalization_mode})',
-            (10, 145),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
-            (255, 255, 255),
-            2,
-        )
-
-        if primary_metric_hand and 0 <= self.tracked_landmark_index < len(primary_metric_hand):
-            tracked = primary_metric_hand[self.tracked_landmark_index]
-            dx = float(tracked.x) - reference_metric[0]
-            dy = float(tracked.y) - reference_metric[1]
-            dz = float(tracked.z) - reference_metric[2]
-            distance = (dx * dx + dy * dy + dz * dz) ** 0.5
-            status = 'DEAD' if distance < self.dead_zone else 'ACTIVE'
-            cv2.putText(
-                image,
-                f'LM[{self.tracked_landmark_index}] {status} '
-                f'd=({dx:.2f}, {dy:.2f}, {dz:.2f}) m',
-                (10, 178),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.65,
-                (0, 220, 255),
-                2,
-            )
+        if exit_requested:
+            self.get_logger().info('Visualization window closed by user.')
+            rclpy.shutdown()
 
     def destroy_node(self):
         """Stop DepthAI, MediaPipe, and OpenCV resources before shutdown."""
@@ -1087,11 +997,8 @@ class HandLandmarksOakNode(Node):
             self.landmarker.close()
         except Exception:
             pass
-        if self.visualize:
-            try:
-                cv2.destroyWindow(self.window_name)
-            except Exception:
-                pass
+        if self.viewer is not None:
+            self.viewer.close()
         super().destroy_node()
 
 

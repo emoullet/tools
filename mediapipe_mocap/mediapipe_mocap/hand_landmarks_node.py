@@ -7,8 +7,6 @@ from cv_bridge import CvBridge
 from geometry_msgs.msg import Point32
 
 from mediapipe_mocap.hand_landmarks_common import (
-    draw_hand_on_image,
-    draw_reference_overlay,
     ensure_3_tuple,
     get_best_mediapipe_delegate,
     OneEuroFilter,
@@ -18,6 +16,7 @@ from mediapipe_mocap.hand_landmarks_common import (
     timestamp_sec_from_header,
 )
 from mediapipe_mocap.ros_qos import latest_reliable_qos
+from mediapipe_mocap.viewer import HandLandmarksViewer
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, PointCloud
@@ -134,6 +133,11 @@ class HandLandmarksNode(Node):
         )
         self.visualize = self.get_parameter('visualize').get_parameter_value().bool_value
         self.window_name = self.get_parameter('window_name').get_parameter_value().string_value
+        self.viewer = (
+            HandLandmarksViewer(self.window_name)
+            if self.visualize
+            else None
+        )
         self.reset_reference_topic = (
             self.get_parameter('reset_reference_topic').get_parameter_value().string_value
         )
@@ -265,8 +269,7 @@ class HandLandmarksNode(Node):
                 f'beta={one_euro_beta:.3f}'
             )
 
-        self.last_time = time.time()
-        self.last_debug_time = self.last_time
+        self.last_debug_time = time.time()
         self.frame_count = 0
 
     # -------------------------------------------------------------
@@ -561,37 +564,19 @@ class HandLandmarksNode(Node):
         if self.visualize:
             if cv_bgr_for_visualization is None:
                 return
-            annotated = cv_bgr_for_visualization.copy()
-            # Draw all detected hands (if multiple)
-            for hand_landmarks in processed_hand_landmarks:
-                draw_hand_on_image(annotated, hand_landmarks)
-            # Write fps on the image
-            now = time.time()
-            elapsed = now - self.last_time
-            if elapsed > 0:
-                fps = 1 / elapsed
-                cv2.putText(annotated, f'FPS: {fps:.1f}', (10, 30),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-                self.last_time = now
-            # write MediaPipe processing time
-            if t_mediapipe is not None:
-                cv2.putText(annotated, f'MP: {t_mediapipe*1000:.1f}ms', (10, 70),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-            primary_hand = processed_hand_landmarks[0] if processed_hand_landmarks else None
             with self.reference_lock:
                 reference = self.reference_position
-            draw_reference_overlay(
-                annotated,
-                reference,
-                primary_hand,
+            exit_requested = self.viewer.show_2d(
+                cv_bgr_for_visualization,
+                processed_hand_landmarks,
+                mediapipe_time_sec=t_mediapipe,
+                reference_xyz=reference,
                 tracked_landmark_index=self.tracked_landmark_index,
                 show_control_zones=self.show_control_zones,
                 dead_zone=self.dead_zone,
                 saturation_zone=self.saturation_zone,
             )
-            cv2.imshow(self.window_name, annotated)
-            key = cv2.waitKey(1)
-            if key == 27 or key == ord('q'):
+            if exit_requested:
                 self.get_logger().info('Visualization window closed by user.')
                 rclpy.shutdown()
         # self.get_logger().debug(f'Published {len(cloud.points)} landmarks.')
@@ -614,11 +599,8 @@ class HandLandmarksNode(Node):
             self.landmarker.close()
         except Exception:
             pass
-        if self.visualize:
-            try:
-                cv2.destroyWindow(self.window_name)
-            except Exception:
-                pass
+        if self.viewer is not None:
+            self.viewer.close()
         super().destroy_node()
 
 

@@ -185,21 +185,12 @@ Key OAK parameters:
 | `normalization_mode` | `axis` | `axis` clips each component with `saturation_zone`; `vector` clips by vector norm |
 | `auto_reference_on_first_detection` | `true` | Use the first valid tracked landmark as the 3D reference |
 
-### Running the Viewer
+### Visualization
 
-Use the bundled viewer to overlay landmarks on the input image:
-
-```bash
-ros2 launch mediapipe_mocap viewer_launch.py
-```
-
-Or run directly:
-
-```bash
-ros2 run mediapipe_mocap viewer_node
-```
-
-Topics can be overridden via parameters (`image_topic`, `landmarks_topic`, `window_name`).
+Hand-landmark visualization is built into the landmark producer nodes. Enable it
+with the `visualize` parameter and select the OpenCV window title with
+`window_name`. The shared, ROS-independent implementation is available to Python
+callers as `mediapipe_mocap.viewer.HandLandmarksViewer`.
 
 ### Configuration
 
@@ -283,12 +274,6 @@ ros2 launch mediapipe_mocap oak_hand_landmarks_launch.py
 | `dead_zone` | 0.05 | Dead zone radius used by the OAK feedback overlay |
 | `saturation_zone` | 0.4 | XYZ saturation distance used by normalization and feedback overlay |
 | `landmark_index` | 0 | Tracked landmark index (0-20) for OAK feedback overlay |
-
-### viewer_launch.py
-Starts only the viewer node for visualization:
-```bash
-ros2 launch mediapipe_mocap viewer_launch.py
-```
 
 ### webcam_hand_landmarks_launch.py
 Complete pipeline: captures video from a USB/integrated webcam, detects hand landmarks, and displays results.

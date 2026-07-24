@@ -43,20 +43,6 @@ def generate_launch_description():
         parameters=[hand_landmarks_config_file],
     )
 
-    viewer_node = Node(
-        package='mediapipe_mocap',
-        executable='viewer_node',
-        name='hand_landmarks_viewer',
-        output='screen',
-        parameters=[
-            {
-                'image_topic': '/camera/color/image_raw',
-                'landmarks_topic': '/hand_landmarks',
-                'window_name': 'Hand Landmarks Viewer',
-            },
-        ],
-    )
-
     offline_video_node = Node(
         package='offline_media_publisher',
         executable='video_publisher',
@@ -75,6 +61,5 @@ def generate_launch_description():
         folder_path_arg,
         fps_arg,
         hand_landmarks_node,
-        viewer_node,
         offline_video_node,
     ])
