@@ -326,10 +326,23 @@ ros2 launch mediapipe_mocap usb_cam_hand_landmarks_launch.py \
   pixel_format:=mjpeg2rgb
 ```
 
-### test_offline_video_hand_landmarks_launch.py
-Processes video files from a directory. Requires the `offline_media_publisher` package:
+### Testing Hand Landmarks with Offline Video
+
+Run the offline video publisher in one terminal:
+
 ```bash
-ros2 launch mediapipe_mocap test_offline_video_hand_landmarks_launch.py folder_path:=/path/to/videos fps:=30
+ros2 run offline_media_publisher video_publisher --ros-args \
+  --params-file "$(ros2 pkg prefix offline_media_publisher)/share/offline_media_publisher/config/video_publisher.yaml" \
+  -p folder_path:=/path/to/videos \
+  -p fps:=30
+```
+
+In a second terminal, run hand-landmark detection with its standard
+configuration:
+
+```bash
+ros2 run mediapipe_mocap hand_landmarks_node --ros-args \
+  --params-file "$(ros2 pkg prefix mediapipe_mocap)/share/mediapipe_mocap/config/hand_landmarks_node.yaml"
 ```
 
 ## Building

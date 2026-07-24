@@ -12,7 +12,6 @@ setup(
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/launch', [
             'launch/hand_landmarks_launch.py',
-            'launch/test_offline_video_hand_landmarks_launch.py',
             'launch/usb_cam_hand_landmarks_launch.py',
             'launch/oak_hand_landmarks_launch.py',
         ]),
