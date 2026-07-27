@@ -26,6 +26,7 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
+from dataclasses import dataclass
 import datetime
 import os
 import threading
@@ -50,6 +51,16 @@ from mediapipe_mocap.landmark_processing import (
     OneEuroFilterConfig,
     relative_points,
 )
+from mediapipe_mocap.mediapipe_runtime import (
+    AsyncContextStore,
+    create_hand_landmarker,
+    HandLandmarkerConfig,
+    MonotonicTimestampGenerator,
+    OAK_ASYNC_CONTEXT_LIMIT,
+    parse_running_mode,
+    RuntimeMode,
+    timestamp_sec_from_header,
+)
 from mediapipe_mocap.reference import (
     ReferenceState,
     ResetRequestResult,
@@ -70,6 +81,17 @@ from mediapipe.tasks.python.vision import (  # noqa: E402,I100
     RunningMode,
 )
 import numpy as np  # noqa: E402,I100
+
+
+@dataclass(frozen=True)
+class OakAsyncContext:
+    """Frame data retained until a live-stream result arrives."""
+
+    header: Header
+    timestamp_sec: float
+    depth_mm: np.ndarray
+    visualization_frame: np.ndarray | None
+    detect_start_sec: float
 
 
 class HandLandmarksOakNode(Node):
@@ -226,38 +248,36 @@ class HandLandmarksOakNode(Node):
                 ),
             )
 
-        running_mode_param = self._get_str('running_mode').upper()
-        if running_mode_param not in ('VIDEO', 'LIVE_STREAM'):
-            self.get_logger().warning(
-                f"Invalid running_mode '{running_mode_param}', falling back to VIDEO. "
-                "Expected 'VIDEO' or 'LIVE_STREAM'."
-            )
-            running_mode_param = 'VIDEO'
-        self.running_mode = (
-            RunningMode.LIVE_STREAM
-            if running_mode_param == 'LIVE_STREAM'
-            else RunningMode.VIDEO
+        self.running_mode = parse_running_mode(
+            self._get_str('running_mode'),
+            self.get_logger().warning,
         )
-
-        options_kwargs = {
-            'base_options': BaseOptions(
+        running_mode_param = self.running_mode.value
+        self.landmarker = create_hand_landmarker(
+            HandLandmarkerConfig(
                 model_asset_path=self.model_path,
-                delegate=get_best_mediapipe_delegate(mp, self.get_logger()),
+                running_mode=self.running_mode,
+                num_hands=self.num_hands,
+                min_hand_detection_confidence=self._get_float(
+                    'min_hand_detection_confidence'
+                ),
+                min_hand_presence_confidence=self._get_float(
+                    'min_hand_presence_confidence'
+                ),
+                min_tracking_confidence=self._get_float(
+                    'min_tracking_confidence'
+                ),
             ),
-            'running_mode': self.running_mode,
-            'num_hands': self.num_hands,
-            'min_hand_detection_confidence': self._get_float(
-                'min_hand_detection_confidence'
+            delegate=get_best_mediapipe_delegate(mp, self.get_logger()),
+            result_callback=(
+                self._on_live_stream_result
+                if self.running_mode is RuntimeMode.LIVE_STREAM
+                else None
             ),
-            'min_hand_presence_confidence': self._get_float(
-                'min_hand_presence_confidence'
-            ),
-            'min_tracking_confidence': self._get_float('min_tracking_confidence'),
-        }
-        if self.running_mode == RunningMode.LIVE_STREAM:
-            options_kwargs['result_callback'] = self._on_live_stream_result
-        self.landmarker = HandLandmarker.create_from_options(
-            HandLandmarkerOptions(**options_kwargs)
+            base_options_type=BaseOptions,
+            landmarker_options_type=HandLandmarkerOptions,
+            landmarker_type=HandLandmarker,
+            running_mode_type=RunningMode,
         )
 
         self.landmarks_pub = self.create_publisher(PointCloud, self.landmarks_topic, 10)
@@ -283,10 +303,10 @@ class HandLandmarksOakNode(Node):
         self.sync_queue = None
         self.capture_thread = None
         self.running = False
-        self._ts_lock = threading.Lock()
-        self._last_ts_ms = -1
-        self._context_by_ts_ms = {}
-        self._max_pending_timestamps = 8
+        self._timestamps = MonotonicTimestampGenerator()
+        self._async_contexts = AsyncContextStore[OakAsyncContext](
+            OAK_ASYNC_CONTEXT_LIMIT
+        )
         self._last_depth_by_hand = [
             [None for _ in range(21)]
             for _ in range(self.num_hands)
@@ -544,27 +564,27 @@ class HandLandmarksOakNode(Node):
         header = Header()
         header.stamp = self.get_clock().now().to_msg()
         header.frame_id = self.camera_frame_id
-        ts_sec = float(header.stamp.sec) + float(header.stamp.nanosec) * 1e-9
+        ts_sec = timestamp_sec_from_header(header)
         ts_ms = self._next_timestamp_ms(rgb_msg)
 
         cv_rgb = cv2.cvtColor(cv_bgr, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=cv_rgb)
 
-        if self.running_mode == RunningMode.LIVE_STREAM:
-            with self._ts_lock:
-                self._context_by_ts_ms[ts_ms] = (
+        if self.running_mode is RuntimeMode.LIVE_STREAM:
+            self._async_contexts.put(
+                ts_ms,
+                OakAsyncContext(
                     header,
                     ts_sec,
                     np.array(depth_mm, copy=True),
                     cv_bgr.copy() if self.visualize else None,
                     time.time(),
-                )
-                self._trim_pending_timestamp_contexts()
+                ),
+            )
             try:
                 self.landmarker.detect_async(mp_image, ts_ms)
             except Exception as exc:
-                with self._ts_lock:
-                    self._context_by_ts_ms.pop(ts_ms, None)
+                self._async_contexts.discard(ts_ms)
                 self.get_logger().error(f'Error in HandLandmarker.detect_async: {exc}')
             return
 
@@ -600,20 +620,20 @@ class HandLandmarksOakNode(Node):
             visualization frame, and detection start time.
 
         """
-        with self._ts_lock:
-            context = self._context_by_ts_ms.pop(timestamp_ms, None)
-
+        context = self._async_contexts.pop(timestamp_ms)
         if context is None:
             return
 
-        header, ts_sec, depth_mm, cv_rgb_for_visualization, detect_start = context
         self._handle_result(
             result=result,
-            header=header,
-            ts_sec=ts_sec,
-            depth_mm=depth_mm,
-            cv_rgb_for_visualization=cv_rgb_for_visualization,
-            t_mediapipe=max(time.time() - detect_start, 0.0),
+            header=context.header,
+            ts_sec=context.timestamp_sec,
+            depth_mm=context.depth_mm,
+            cv_rgb_for_visualization=context.visualization_frame,
+            t_mediapipe=max(
+                time.time() - context.detect_start_sec,
+                0.0,
+            ),
         )
 
     def _next_timestamp_ms(self, rgb_msg) -> int:
@@ -639,17 +659,7 @@ class HandLandmarksOakNode(Node):
         except Exception:
             ts_ms = int(time.time() * 1000.0)
 
-        with self._ts_lock:
-            if ts_ms <= self._last_ts_ms:
-                ts_ms = self._last_ts_ms + 1
-            self._last_ts_ms = ts_ms
-        return ts_ms
-
-    def _trim_pending_timestamp_contexts(self):
-        """Drop old asynchronous OAK frame contexts beyond the limit."""
-        while len(self._context_by_ts_ms) > self._max_pending_timestamps:
-            oldest_key = next(iter(self._context_by_ts_ms))
-            self._context_by_ts_ms.pop(oldest_key, None)
+        return self._timestamps.next_timestamp(ts_ms)
 
     def reset_reference_callback(self, msg: Bool):
         """

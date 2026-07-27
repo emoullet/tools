@@ -26,8 +26,8 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
+from dataclasses import dataclass
 import os
-import threading
 import time
 
 from ament_index_python.packages import get_package_share_directory
@@ -38,12 +38,22 @@ from mediapipe_mocap.hand_landmarks_common import (
     ensure_3_tuple,
     get_best_mediapipe_delegate,
     prepare_runtime_imports,
-    timestamp_sec_from_header,
 )
 from mediapipe_mocap.landmark_processing import (
     LandmarkFilterBank,
     OneEuroFilterConfig,
     relative_points,
+)
+from mediapipe_mocap.mediapipe_runtime import (
+    AsyncContextStore,
+    create_hand_landmarker,
+    HandLandmarkerConfig,
+    IMAGE_ASYNC_CONTEXT_LIMIT,
+    MonotonicTimestampGenerator,
+    parse_running_mode,
+    RuntimeMode,
+    timestamp_ms_from_header,
+    timestamp_sec_from_header,
 )
 from mediapipe_mocap.reference import (
     ReferenceState,
@@ -55,7 +65,7 @@ from mediapipe_mocap.viewer import HandLandmarksViewer
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, PointCloud
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, Header
 
 
 prepare_runtime_imports()
@@ -69,6 +79,14 @@ from mediapipe.tasks.python.vision import (  # noqa: E402,I100
     RunningMode,
 )
 import numpy as np  # noqa: E402,I100
+
+
+@dataclass(frozen=True)
+class ImageAsyncContext:
+    """ROS context retained until a live-stream result arrives."""
+
+    header: Header
+    detect_start_sec: float
 
 
 class HandLandmarksNode(Node):
@@ -141,20 +159,11 @@ class HandLandmarksNode(Node):
         min_track_conf = float(
             self.get_parameter('min_tracking_confidence').get_parameter_value().double_value
         )
-        running_mode_param = (
-            self.get_parameter('running_mode').get_parameter_value().string_value.upper()
+        self.running_mode = parse_running_mode(
+            self.get_parameter('running_mode').get_parameter_value().string_value,
+            self.get_logger().warning,
         )
-        if running_mode_param not in ('VIDEO', 'LIVE_STREAM'):
-            self.get_logger().warning(
-                f"Invalid running_mode '{running_mode_param}', falling back to VIDEO. "
-                "Expected 'VIDEO' or 'LIVE_STREAM'."
-            )
-            running_mode_param = 'VIDEO'
-        self.running_mode = (
-            RunningMode.LIVE_STREAM
-            if running_mode_param == 'LIVE_STREAM'
-            else RunningMode.VIDEO
-        )
+        running_mode_param = self.running_mode.value
         self.selfie_mode = (
             self.get_parameter('selfie_mode').get_parameter_value().bool_value
         )
@@ -259,28 +268,30 @@ class HandLandmarksNode(Node):
         # Detect delegate: use GPU on native Linux, CPU on WSL or other systems
         delegate = get_best_mediapipe_delegate(mp, self.get_logger())
 
-        self._ts_lock = threading.Lock()
-        self._last_ts_ms = -1
-        self._header_by_ts_ms = {}
-        self._detect_start_by_ts_ms = {}
-        self._max_pending_timestamps = 120
-        options_kwargs = {
-            'base_options': BaseOptions(
+        self._timestamps = MonotonicTimestampGenerator()
+        self._async_contexts = AsyncContextStore[ImageAsyncContext](
+            IMAGE_ASYNC_CONTEXT_LIMIT
+        )
+        self.landmarker = create_hand_landmarker(
+            HandLandmarkerConfig(
                 model_asset_path=model_path,
-                delegate=delegate
+                running_mode=self.running_mode,
+                num_hands=num_hands,
+                min_hand_detection_confidence=min_det_conf,
+                min_hand_presence_confidence=min_presence_conf,
+                min_tracking_confidence=min_track_conf,
             ),
-            'running_mode': self.running_mode,
-            'num_hands': num_hands,
-            'min_hand_detection_confidence': min_det_conf,
-            'min_hand_presence_confidence': min_presence_conf,
-            'min_tracking_confidence': min_track_conf,
-        }
-        if self.running_mode == RunningMode.LIVE_STREAM:
-            options_kwargs['result_callback'] = self._on_live_stream_result
-
-        options = HandLandmarkerOptions(**options_kwargs)
-
-        self.landmarker = HandLandmarker.create_from_options(options)
+            delegate=delegate,
+            result_callback=(
+                self._on_live_stream_result
+                if self.running_mode is RuntimeMode.LIVE_STREAM
+                else None
+            ),
+            base_options_type=BaseOptions,
+            landmarker_options_type=HandLandmarkerOptions,
+            landmarker_type=HandLandmarker,
+            running_mode_type=RunningMode,
+        )
 
         initial_reference = self.reference_state.snapshot().position
         self.get_logger().info(
@@ -354,19 +365,22 @@ class HandLandmarksNode(Node):
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=cv_rgb)
 
         # Use ROS time and enforce strictly increasing timestamps for MediaPipe.
-        ts_ms = self._next_timestamp_ms(msg)
+        ts_ms = self._timestamps.next_timestamp(
+            timestamp_ms_from_header(msg.header)
+        )
         ts_sec = timestamp_sec_from_header(msg.header)
-        if self.running_mode == RunningMode.LIVE_STREAM:
-            with self._ts_lock:
-                self._header_by_ts_ms[ts_ms] = msg.header
-                self._detect_start_by_ts_ms[ts_ms] = time.time()
-                self._trim_pending_timestamp_maps()
+        if self.running_mode is RuntimeMode.LIVE_STREAM:
+            self._async_contexts.put(
+                ts_ms,
+                ImageAsyncContext(
+                    header=msg.header,
+                    detect_start_sec=time.time(),
+                ),
+            )
             try:
                 self.landmarker.detect_async(mp_image, ts_ms)
             except Exception as e:
-                with self._ts_lock:
-                    self._header_by_ts_ms.pop(ts_ms, None)
-                    self._detect_start_by_ts_ms.pop(ts_ms, None)
+                self._async_contexts.discard(ts_ms)
                 self.get_logger().error(f'Error in HandLandmarker.detect_async: {e}')
             return
 
@@ -406,17 +420,12 @@ class HandLandmarksNode(Node):
             detection start time.
 
         """
-        with self._ts_lock:
-            header = self._header_by_ts_ms.pop(timestamp_ms, None)
-            detect_start = self._detect_start_by_ts_ms.pop(timestamp_ms, None)
-
-        if header is None:
+        context = self._async_contexts.pop(timestamp_ms)
+        if context is None:
             return
 
-        ts_sec = timestamp_sec_from_header(header)
-        t_mediapipe = None
-        if detect_start is not None:
-            t_mediapipe = max(time.time() - detect_start, 0.0)
+        ts_sec = timestamp_sec_from_header(context.header)
+        t_mediapipe = max(time.time() - context.detect_start_sec, 0.0)
 
         cv_bgr = None
         if self.visualize and output_image is not None:
@@ -428,36 +437,11 @@ class HandLandmarksNode(Node):
 
         self._handle_result(
             result=result,
-            header=header,
+            header=context.header,
             ts_sec=ts_sec,
             cv_bgr_for_visualization=cv_bgr,
             t_mediapipe=t_mediapipe,
         )
-
-    def _next_timestamp_ms(self, msg: Image) -> int:
-        """
-        Return a strictly increasing MediaPipe timestamp in milliseconds.
-
-        Parameters
-        ----------
-        msg : sensor_msgs.msg.Image
-            Input image whose header stamp provides the source time. If that stamp
-            does not increase monotonically, the returned timestamp is advanced by
-            one millisecond.
-
-        Returns
-        -------
-        int
-            Strictly increasing timestamp accepted by MediaPipe's video and
-            live-stream APIs.
-
-        """
-        ts_ms = int(msg.header.stamp.sec) * 1000 + int(msg.header.stamp.nanosec) // 1_000_000
-        with self._ts_lock:
-            if ts_ms <= self._last_ts_ms:
-                ts_ms = self._last_ts_ms + 1
-            self._last_ts_ms = ts_ms
-        return ts_ms
 
     def reset_reference_callback(self, msg: Bool):
         """
@@ -484,14 +468,6 @@ class HandLandmarksNode(Node):
         self.get_logger().info(
             'Reference reset requested; waiting for next landmark frame to recenter'
         )
-
-    def _trim_pending_timestamp_maps(self):
-        """Drop old async MediaPipe timestamp contexts beyond the limit."""
-        while len(self._header_by_ts_ms) > self._max_pending_timestamps:
-            # Dict preserves insertion order; pop the oldest pending timestamp first.
-            oldest_key = next(iter(self._header_by_ts_ms))
-            self._header_by_ts_ms.pop(oldest_key, None)
-            self._detect_start_by_ts_ms.pop(oldest_key, None)
 
     def _update_reference_if_needed(self, processed_hand_landmarks):
         """

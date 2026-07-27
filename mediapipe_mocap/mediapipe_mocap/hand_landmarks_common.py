@@ -137,25 +137,6 @@ def get_best_mediapipe_delegate(mp_module, logger):
     return delegate
 
 
-def timestamp_sec_from_header(header) -> float:
-    """
-    Convert a ROS message header timestamp to floating-point seconds.
-
-    Parameters
-    ----------
-    header : std_msgs.msg.Header
-        ROS message header whose ``stamp.sec`` and ``stamp.nanosec`` fields
-        contain the source timestamp.
-
-    Returns
-    -------
-    float
-        Timestamp in seconds.
-
-    """
-    return float(header.stamp.sec) + float(header.stamp.nanosec) * 1e-9
-
-
 def ensure_3_tuple(values: Iterable[float], fallback, logger=None, parameter_name='value'):
     """
     Return three float values, warning and using fallback when incomplete.
