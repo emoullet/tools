@@ -5,6 +5,10 @@ import sys
 from typing import Iterable, Sequence
 
 from geometry_msgs.msg import Point32
+from signal_processing import OneEuroFilter as SignalProcessingOneEuroFilter
+
+
+OneEuroFilter = SignalProcessingOneEuroFilter
 
 
 def prepare_runtime_imports():
@@ -320,43 +324,3 @@ def reset_filter_bank(filters):
     for hand_filters in filters:
         for filter_instance in hand_filters:
             filter_instance.reset()
-
-
-class OneEuroFilter:
-    """Simple scalar One Euro filter."""
-
-    def __init__(self, frequency: float = 30.0, mincutoff: float = 1.0, beta: float = 0.1):
-        self.frequency = float(frequency)
-        self.mincutoff = float(mincutoff)
-        self.beta = float(beta)
-        self.last_value = 0.0
-        self.last_derivative = 0.0
-        self.last_timestamp = -1.0
-
-    def reset(self):
-        self.last_value = 0.0
-        self.last_derivative = 0.0
-        self.last_timestamp = -1.0
-
-    def filter(self, value: float, timestamp_sec: float) -> float:  # noqa: A003
-        if self.last_timestamp < 0.0:
-            self.last_value = float(value)
-            self.last_derivative = 0.0
-            self.last_timestamp = float(timestamp_sec)
-            return float(value)
-
-        dt = float(timestamp_sec) - self.last_timestamp
-        if dt <= 0.0:
-            return self.last_value
-
-        derivative = (float(value) - self.last_value) / dt
-        cutoff = self.mincutoff + self.beta * abs(derivative)
-        alpha = cutoff / (cutoff + self.frequency)
-
-        filtered_value = alpha * float(value) + (1.0 - alpha) * self.last_value
-        filtered_derivative = alpha * derivative + (1.0 - alpha) * self.last_derivative
-
-        self.last_value = filtered_value
-        self.last_derivative = filtered_derivative
-        self.last_timestamp = float(timestamp_sec)
-        return filtered_value
