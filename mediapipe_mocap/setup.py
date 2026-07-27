@@ -9,7 +9,12 @@ setup(
     data_files=[
         ('share/ament_index/resource_index/packages',
          ['resource/' + package_name]),
-        ('share/' + package_name, ['package.xml']),
+        ('share/' + package_name, [
+            'package.xml',
+            'LICENSE',
+            'THIRD_PARTY_NOTICES.md',
+        ]),
+        ('share/' + package_name + '/LICENSES', ['LICENSES/Apache-2.0.txt']),
         ('share/' + package_name + '/launch', [
             'launch/hand_landmarks_launch.py',
             'launch/usb_cam_hand_landmarks_launch.py',
