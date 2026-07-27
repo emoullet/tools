@@ -42,11 +42,13 @@ from std_msgs.msg import Bool, Header
 from mediapipe_mocap.hand_landmarks_common import (  # noqa: I100
     ensure_3_tuple,
     get_best_mediapipe_delegate,
-    normalized_control_points,
-    OneEuroFilter,
     prepare_runtime_imports,
+)
+from mediapipe_mocap.landmark_processing import (
+    LandmarkFilterBank,
+    normalized_control_points,
+    OneEuroFilterConfig,
     relative_points,
-    reset_filter_bank,
 )
 from mediapipe_mocap.reference import (
     ReferenceState,
@@ -213,15 +215,16 @@ class HandLandmarksOakNode(Node):
         one_euro_frequency = max(self._get_float('one_euro_frequency'), 1e-3)
         one_euro_mincutoff = max(self._get_float('one_euro_mincutoff'), 1e-6)
         one_euro_beta = max(self._get_float('one_euro_beta'), 0.0)
-        self.one_euro_filters = []
+        self.landmark_filters = None
         if self.enable_one_euro_filter:
-            self.one_euro_filters = [
-                [
-                    OneEuroFilter(one_euro_frequency, one_euro_mincutoff, one_euro_beta)
-                    for _ in range(21 * 3)
-                ]
-                for _ in range(self.num_hands)
-            ]
+            self.landmark_filters = LandmarkFilterBank(
+                self.num_hands,
+                OneEuroFilterConfig(
+                    frequency=one_euro_frequency,
+                    min_cutoff=one_euro_mincutoff,
+                    beta=one_euro_beta,
+                ),
+            )
 
         running_mode_param = self._get_str('running_mode').upper()
         if running_mode_param not in ('VIDEO', 'LIVE_STREAM'):
@@ -760,8 +763,8 @@ class HandLandmarksOakNode(Node):
                 cloud.points = published_points
                 self.landmarks_pub.publish(cloud)
         else:
-            if self.enable_one_euro_filter:
-                reset_filter_bank(self.one_euro_filters)
+            if self.landmark_filters is not None:
+                self.landmark_filters.reset()
             self.get_logger().debug('No valid 3D hand detected in current frame.')
 
         if (
@@ -858,15 +861,23 @@ class HandLandmarksOakNode(Node):
             x = (u - self.cx) * z / self.fx
             y = (v - self.cy) * z / self.fy
 
-            if self.enable_one_euro_filter and hand_idx < len(self.one_euro_filters):
-                hand_filters = self.one_euro_filters[hand_idx]
-                base_idx = index * 3
-                x = hand_filters[base_idx].filter(x, ts_sec)
-                y = hand_filters[base_idx + 1].filter(y, ts_sec)
-                z = hand_filters[base_idx + 2].filter(z, ts_sec)
+            metric_point = Point32(x=float(x), y=float(y), z=float(z))
+            if self.landmark_filters is not None:
+                metric_point = self.landmark_filters.filter_point(
+                    hand_idx,
+                    index,
+                    metric_point,
+                    ts_sec,
+                )
 
-            metric_hand.append(Point32(x=float(x), y=float(y), z=float(z)))
-            image_hand.append(Point32(x=float(lm.x), y=float(lm.y), z=float(z)))
+            metric_hand.append(metric_point)
+            image_hand.append(
+                Point32(
+                    x=float(lm.x),
+                    y=float(lm.y),
+                    z=float(metric_point.z),
+                )
+            )
 
         return metric_hand, image_hand, len(missing_indices)
 

@@ -37,11 +37,13 @@ from geometry_msgs.msg import Point32
 from mediapipe_mocap.hand_landmarks_common import (
     ensure_3_tuple,
     get_best_mediapipe_delegate,
-    OneEuroFilter,
     prepare_runtime_imports,
-    relative_points,
-    reset_filter_bank,
     timestamp_sec_from_header,
+)
+from mediapipe_mocap.landmark_processing import (
+    LandmarkFilterBank,
+    OneEuroFilterConfig,
+    relative_points,
 )
 from mediapipe_mocap.reference import (
     ReferenceState,
@@ -220,16 +222,17 @@ class HandLandmarksNode(Node):
         one_euro_mincutoff = max(one_euro_mincutoff, 1e-6)
         one_euro_beta = max(one_euro_beta, 0.0)
 
-        self.one_euro_filters = []
+        self.landmark_filters = None
         if self.enable_one_euro_filter:
             filter_hand_slots = max(num_hands, 1)
-            self.one_euro_filters = [
-                [
-                    OneEuroFilter(one_euro_frequency, one_euro_mincutoff, one_euro_beta)
-                    for _ in range(21 * 3)
-                ]
-                for _ in range(filter_hand_slots)
-            ]
+            self.landmark_filters = LandmarkFilterBank(
+                filter_hand_slots,
+                OneEuroFilterConfig(
+                    frequency=one_euro_frequency,
+                    min_cutoff=one_euro_mincutoff,
+                    beta=one_euro_beta,
+                ),
+            )
 
         self.bridge = CvBridge()
 
@@ -556,13 +559,15 @@ class HandLandmarksNode(Node):
                     y = float(lm.y)
                     # Keep the 2D node planar; the OAK path handles metric depth.
                     z = 0.0
-                    if self.enable_one_euro_filter and hand_idx < len(self.one_euro_filters):
-                        hand_filters = self.one_euro_filters[hand_idx]
-                        base_idx = i * 3
-                        x = hand_filters[base_idx].filter(x, ts_sec)
-                        y = hand_filters[base_idx + 1].filter(y, ts_sec)
-                        z = hand_filters[base_idx + 2].filter(z, ts_sec)
-                    processed_hand.append(Point32(x=x, y=y, z=z))
+                    point = Point32(x=x, y=y, z=z)
+                    if self.landmark_filters is not None:
+                        point = self.landmark_filters.filter_point(
+                            hand_idx,
+                            i,
+                            point,
+                            ts_sec,
+                        )
+                    processed_hand.append(point)
                 processed_hand_landmarks.append(processed_hand)
 
         if processed_hand_landmarks:
@@ -583,8 +588,8 @@ class HandLandmarksNode(Node):
             cloud.points = relative_landmarks
             self.landmarks_pub.publish(cloud)
         else:
-            if self.enable_one_euro_filter:
-                reset_filter_bank(self.one_euro_filters)
+            if self.landmark_filters is not None:
+                self.landmark_filters.reset()
             self.get_logger().debug('No hand detected in current frame.')
 
         if self.visualize:
