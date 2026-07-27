@@ -43,6 +43,11 @@ from mediapipe_mocap.hand_landmarks_common import (
     reset_filter_bank,
     timestamp_sec_from_header,
 )
+from mediapipe_mocap.reference import (
+    ReferenceState,
+    ResetRequestResult,
+    ResetTriggerMode,
+)
 from mediapipe_mocap.ros_qos import latest_reliable_qos
 from mediapipe_mocap.viewer import HandLandmarksViewer
 import rclpy
@@ -184,15 +189,17 @@ class HandLandmarksNode(Node):
         initial_reference_values = (
             self.get_parameter('initial_reference').get_parameter_value().double_array_value
         )
-        self.reference_position = ensure_3_tuple(
+        initial_reference = ensure_3_tuple(
             initial_reference_values,
             [0.5, 0.5, 0.5],
             logger=self.get_logger(),
             parameter_name='initial_reference',
         )
-        self.pending_reference_reset = False
-        self.last_reset_reference_signal = False
-        self.last_reset_reference_time_sec = -1.0
+        self.reference_state = ReferenceState(
+            initial_position=initial_reference,
+            cooldown_sec=self.reset_reference_cooldown_sec,
+            trigger_mode=ResetTriggerMode.RISING_EDGE,
+        )
         self.show_control_zones = (
             self.get_parameter('show_control_zones').get_parameter_value().bool_value
         )
@@ -207,7 +214,6 @@ class HandLandmarksNode(Node):
         self.tracked_landmark_index = int(
             self.get_parameter('tracked_landmark_index').get_parameter_value().integer_value
         )
-        self.reference_lock = threading.Lock()
 
         # Keep filter parameters in valid ranges to avoid unstable behavior.
         one_euro_frequency = max(one_euro_frequency, 1e-3)
@@ -273,6 +279,7 @@ class HandLandmarksNode(Node):
 
         self.landmarker = HandLandmarker.create_from_options(options)
 
+        initial_reference = self.reference_state.snapshot().position
         self.get_logger().info(
             f'HandLandmarksNode started.\n'
             f'  image_topic      = {image_topic}\n'
@@ -285,8 +292,8 @@ class HandLandmarksNode(Node):
             f"glx_vendor={os.environ.get('__GLX_VENDOR_LIBRARY_NAME', '<unset>')}\n"
             f'  reset_reference  = {self.reset_reference_topic} '
             f'(cooldown={self.reset_reference_cooldown_sec:.3f}s)\n'
-            f'  initial_ref      = ({self.reference_position[0]:.3f}, '
-            f'{self.reference_position[1]:.3f}, {self.reference_position[2]:.3f})\n'
+            f'  initial_ref      = ({initial_reference[0]:.3f}, '
+            f'{initial_reference[1]:.3f}, {initial_reference[2]:.3f})\n'
             f'  control_zones    = {self.show_control_zones} '
             f'(dead={self.dead_zone:.3f}, sat={self.saturation_zone:.3f}, '
             f'lm_idx={self.tracked_landmark_index})\n'
@@ -460,26 +467,17 @@ class HandLandmarksNode(Node):
             the next detected hand, subject to ``reset_reference_cooldown_sec``.
 
         """
-        current_signal = bool(msg.data)
-        rising_edge = current_signal and not self.last_reset_reference_signal
-        self.last_reset_reference_signal = current_signal
-
-        if not rising_edge:
+        now_sec = self.get_clock().now().nanoseconds * 1e-9
+        reset_result = self.reference_state.request_reset(bool(msg.data), now_sec)
+        if reset_result is ResetRequestResult.INACTIVE:
             return
 
-        now_sec = self.get_clock().now().nanoseconds * 1e-9
-        if (
-            self.last_reset_reference_time_sec >= 0.0
-            and now_sec - self.last_reset_reference_time_sec < self.reset_reference_cooldown_sec
-        ):
+        if reset_result is ResetRequestResult.COOLDOWN:
             self.get_logger().debug(
                 f'Reset ignored due to cooldown ({self.reset_reference_cooldown_sec:.3f} s)'
             )
             return
 
-        self.last_reset_reference_time_sec = now_sec
-        with self.reference_lock:
-            self.pending_reference_reset = True
         self.get_logger().info(
             'Reference reset requested; waiting for next landmark frame to recenter'
         )
@@ -492,7 +490,7 @@ class HandLandmarksNode(Node):
             self._header_by_ts_ms.pop(oldest_key, None)
             self._detect_start_by_ts_ms.pop(oldest_key, None)
 
-    def _update_reference_if_needed(self, processed_hand_landmarks, header):
+    def _update_reference_if_needed(self, processed_hand_landmarks):
         """
         Recenter the reference on the tracked landmark when requested.
 
@@ -501,33 +499,26 @@ class HandLandmarksNode(Node):
         processed_hand_landmarks : list[list[geometry_msgs.msg.Point32]]
             Detected hands after optional filtering. Coordinates are normalized
             image-space x/y values with planar ``z = 0``.
-        header : std_msgs.msg.Header
-            Header for the current image frame. The parameter keeps the method
-            signature aligned with result handling even though the recentering
-            state currently uses only landmark coordinates.
 
         """
-        # Extract first hand's landmarks
         first_hand = processed_hand_landmarks[0]
-        with self.reference_lock:
-            if (
-                self.pending_reference_reset
-                and 0 <= self.tracked_landmark_index < len(first_hand)
-            ):
-                tracked_lm = first_hand[self.tracked_landmark_index]
-                self.reference_position = (
-                    float(tracked_lm.x),
-                    float(tracked_lm.y),
-                    float(tracked_lm.z),
-                )
-                self.pending_reference_reset = False
-                self.get_logger().info(
-                    'Reference position recentered from current landmark '
-                    f'{self.tracked_landmark_index}: '
-                    f'({self.reference_position[0]:.3f}, '
-                    f'{self.reference_position[1]:.3f}, '
-                    f'{self.reference_position[2]:.3f})'
-                )
+        if not (0 <= self.tracked_landmark_index < len(first_hand)):
+            return
+
+        tracked_lm = first_hand[self.tracked_landmark_index]
+        updated = self.reference_state.update_reference(
+            (tracked_lm.x, tracked_lm.y, tracked_lm.z)
+        )
+        if updated is None:
+            return
+
+        self.get_logger().info(
+            'Reference position recentered from current landmark '
+            f'{self.tracked_landmark_index}: '
+            f'({updated.position[0]:.3f}, '
+            f'{updated.position[1]:.3f}, '
+            f'{updated.position[2]:.3f})'
+        )
 
     def _handle_result(self, result, header, ts_sec: float, cv_bgr_for_visualization, t_mediapipe):
         """
@@ -575,10 +566,9 @@ class HandLandmarksNode(Node):
                 processed_hand_landmarks.append(processed_hand)
 
         if processed_hand_landmarks:
-            self._update_reference_if_needed(processed_hand_landmarks, header)
+            self._update_reference_if_needed(processed_hand_landmarks)
 
-            with self.reference_lock:
-                reference = self.reference_position
+            reference = self.reference_state.snapshot().position
             norm_x, norm_y = self.frame_normalization_factor
             ref_x, ref_y = reference[0], reference[1]
 
@@ -600,8 +590,7 @@ class HandLandmarksNode(Node):
         if self.visualize:
             if cv_bgr_for_visualization is None:
                 return
-            with self.reference_lock:
-                reference = self.reference_position
+            reference = self.reference_state.snapshot().position
             exit_requested = self.viewer.show_2d(
                 cv_bgr_for_visualization,
                 processed_hand_landmarks,

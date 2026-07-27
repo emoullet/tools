@@ -48,6 +48,11 @@ from mediapipe_mocap.hand_landmarks_common import (  # noqa: I100
     relative_points,
     reset_filter_bank,
 )
+from mediapipe_mocap.reference import (
+    ReferenceState,
+    ResetRequestResult,
+    ResetTriggerMode,
+)
 from mediapipe_mocap.viewer import HandLandmarksViewer
 
 
@@ -192,18 +197,18 @@ class HandLandmarksOakNode(Node):
         initial_reference_values = (
             self.get_parameter('initial_reference').get_parameter_value().double_array_value
         )
-        self.reference_position = ensure_3_tuple(
+        initial_reference = ensure_3_tuple(
             initial_reference_values,
             [0.0, 0.0, 0.6],
             logger=self.get_logger(),
             parameter_name='initial_reference',
         )
-        self.reference_image_position = None
-        self.reference_initialized = not self.auto_reference_on_first_detection
-        self.pending_reference_reset = False
-        self.last_reset_reference_signal = False
-        self.last_reset_reference_time_sec = -1.0
-        self.reference_lock = threading.Lock()
+        self.reference_state = ReferenceState(
+            initial_position=initial_reference,
+            cooldown_sec=self.reset_reference_cooldown_sec,
+            trigger_mode=ResetTriggerMode.TRUE_MESSAGE,
+            initially_initialized=not self.auto_reference_on_first_detection,
+        )
 
         one_euro_frequency = max(self._get_float('one_euro_frequency'), 1e-3)
         one_euro_mincutoff = max(self._get_float('one_euro_mincutoff'), 1e-6)
@@ -654,24 +659,17 @@ class HandLandmarksOakNode(Node):
             valid 3D hand, subject to ``reset_reference_cooldown_sec``.
 
         """
-        current_signal = bool(msg.data)
-
-        if not current_signal:
+        now_sec = self.get_clock().now().nanoseconds * 1e-9
+        reset_result = self.reference_state.request_reset(bool(msg.data), now_sec)
+        if reset_result is ResetRequestResult.INACTIVE:
             return
 
-        now_sec = self.get_clock().now().nanoseconds * 1e-9
-        if (
-            self.last_reset_reference_time_sec >= 0.0
-            and now_sec - self.last_reset_reference_time_sec < self.reset_reference_cooldown_sec
-        ):
+        if reset_result is ResetRequestResult.COOLDOWN:
             self.get_logger().debug(
                 f'Reset ignored due to cooldown ({self.reset_reference_cooldown_sec:.3f} s)'
             )
             return
 
-        self.last_reset_reference_time_sec = now_sec
-        with self.reference_lock:
-            self.pending_reference_reset = True
         self.get_logger().info('Reference reset requested; waiting for next valid 3D hand')
 
     def _handle_result(
@@ -732,9 +730,9 @@ class HandLandmarksOakNode(Node):
                 processed_metric_hands[0],
                 processed_image_hands[0],
             )
-            with self.reference_lock:
-                reference = self.reference_position
-                reference_initialized = self.reference_initialized
+            reference_snapshot = self.reference_state.snapshot()
+            reference = reference_snapshot.position
+            reference_initialized = reference_snapshot.initialized
 
             if reference_initialized:
                 relative_landmarks = relative_points(
@@ -922,39 +920,25 @@ class HandLandmarksOakNode(Node):
             only to display the reference marker at the matching image position.
 
         """
-        with self.reference_lock:
-            should_auto_set = (
-                self.auto_reference_on_first_detection
-                and not self.reference_initialized
-            )
-            should_reset = self.pending_reference_reset or should_auto_set
-            if not should_reset:
-                return
+        if not (0 <= self.tracked_landmark_index < len(metric_hand)):
+            return
 
-            if not (0 <= self.tracked_landmark_index < len(metric_hand)):
-                return
-
-            tracked_metric = metric_hand[self.tracked_landmark_index]
-            tracked_image = image_hand[self.tracked_landmark_index]
-            self.reference_position = (
-                float(tracked_metric.x),
-                float(tracked_metric.y),
-                float(tracked_metric.z),
-            )
-            self.reference_image_position = (
-                float(tracked_image.x),
-                float(tracked_image.y),
-                float(tracked_image.z),
-            )
-            self.pending_reference_reset = False
-            self.reference_initialized = True
+        tracked_metric = metric_hand[self.tracked_landmark_index]
+        tracked_image = image_hand[self.tracked_landmark_index]
+        updated = self.reference_state.update_reference(
+            (tracked_metric.x, tracked_metric.y, tracked_metric.z),
+            image_position=(tracked_image.x, tracked_image.y, tracked_image.z),
+            initialize_if_needed=self.auto_reference_on_first_detection,
+        )
+        if updated is None:
+            return
 
         self.get_logger().info(
             '3D reference recentered from landmark '
             f'{self.tracked_landmark_index}: '
-            f'({self.reference_position[0]:.3f}, '
-            f'{self.reference_position[1]:.3f}, '
-            f'{self.reference_position[2]:.3f}) m'
+            f'({updated.position[0]:.3f}, '
+            f'{updated.position[1]:.3f}, '
+            f'{updated.position[2]:.3f}) m'
         )
 
     def _visualize(
@@ -986,10 +970,7 @@ class HandLandmarksOakNode(Node):
             MediaPipe processing duration in seconds.
 
         """
-        with self.reference_lock:
-            reference_metric = self.reference_position
-            reference_image = self.reference_image_position
-            reference_initialized = self.reference_initialized
+        reference_snapshot = self.reference_state.snapshot()
 
         exit_requested = self.viewer.show_3d(
             cv_rgb,
@@ -997,9 +978,9 @@ class HandLandmarksOakNode(Node):
             primary_metric_hand=primary_metric_hand,
             missing_depth_count=missing_depth_count,
             mediapipe_time_sec=t_mediapipe,
-            reference_metric=reference_metric,
-            reference_image=reference_image,
-            reference_initialized=reference_initialized,
+            reference_metric=reference_snapshot.position,
+            reference_image=reference_snapshot.image_position,
+            reference_initialized=reference_snapshot.initialized,
             tracked_landmark_index=self.tracked_landmark_index,
             show_control_zones=self.show_control_zones,
             dead_zone=self.dead_zone,
