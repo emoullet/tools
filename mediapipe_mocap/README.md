@@ -64,6 +64,7 @@ a parameter file.
 | `min_hand_presence_confidence` | double | 0.5 | Minimum confidence for hand presence |
 | `min_tracking_confidence` | double | 0.5 | Minimum tracking confidence |
 | `running_mode` | string | `VIDEO` | MediaPipe running mode: `VIDEO` (sync) or `LIVE_STREAM` (async callback) |
+| `delegate` | string | `AUTO` | Execution policy: `AUTO`, `CPU`, or `GPU`; `AUTO` prefers GPU on native Linux and retries CPU if GPU initialization fails |
 | `enable_one_euro_filter` | bool | false | Enable One Euro smoothing on each landmark coordinate |
 | `one_euro_frequency` | double | 30.0 | Expected landmark update frequency in Hz |
 | `one_euro_mincutoff` | double | 1.0 | Minimum cutoff frequency (lower = smoother) |
@@ -123,6 +124,11 @@ defaults and overrides `selfie_mode=true`.
    Matplotlib/OpenCV extensions are built against NumPy 1.x, and mixing them
    with NumPy 2.x causes an ABI import failure. The constraints file pins the
    validated NumPy 1.26.4 baseline.
+
+   Activating this pinned environment remains recommended. At startup the
+   nodes prefer the active virtual environment and otherwise search up to four
+   parent directories for `.venv_mediapipe`, adding its versioned
+   `site-packages` directory to `sys.path`.
 
 2. Install the ROS 2 USB camera driver:
 
@@ -213,6 +219,7 @@ Key OAK parameters:
 | `rgb_width` | `640` | RGB/depth output width used for MediaPipe and depth sampling |
 | `rgb_height` | `400` | RGB/depth output height used for MediaPipe and depth sampling |
 | `fps` | `50.0` | OAK camera FPS |
+| `delegate` | `AUTO` | MediaPipe execution policy; `AUTO` provides GPU-to-CPU fallback on native Linux |
 | `stereo_preset` | `FAST_DENSITY` | DepthAI StereoDepth preset |
 | `depth_sample_radius_px` | `2` | Median/percentile depth sampling window radius around each landmark |
 | `publish_normalized_landmarks` | `true` | Publish saturated normalized inputs instead of metric relative coordinates |
@@ -238,6 +245,17 @@ Parameters are loaded from `config/hand_landmarks_node.yaml`.
 
 - `VIDEO`: synchronous processing with `detect_for_video`, good default for deterministic frame-by-frame handling.
 - `LIVE_STREAM`: asynchronous processing with `detect_async` + callback, useful for stream-oriented pipelines.
+
+**Execution delegate (`delegate`):**
+
+- `AUTO`: prefer GPU on native Linux and retry with CPU if GPU initialization fails.
+- `CPU`: require CPU execution.
+- `GPU`: require GPU execution and surface initialization errors.
+
+Before importing the computer-vision stack, each node applies the virtual
+environment discovery described above. On Linux systems where an NVIDIA
+driver is detected, it also sets the PRIME render-offload and GLX vendor
+environment variables.
 
 **Model path handling:**
 

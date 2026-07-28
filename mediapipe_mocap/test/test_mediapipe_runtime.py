@@ -34,10 +34,14 @@ from types import SimpleNamespace
 from mediapipe_mocap.mediapipe_runtime import (
     AsyncContextStore,
     create_hand_landmarker,
+    create_hand_landmarker_with_delegate,
+    DelegateMode,
     HandLandmarkerConfig,
     MonotonicTimestampGenerator,
+    parse_delegate_mode,
     parse_running_mode,
     RuntimeMode,
+    select_delegate,
     timestamp_ms_from_header,
     timestamp_sec_from_header,
 )
@@ -55,6 +59,39 @@ def test_running_mode_falls_back_to_video_with_warning():
         "Invalid running_mode 'NOT-A-MODE', falling back to VIDEO. "
         "Expected 'VIDEO' or 'LIVE_STREAM'."
     ]
+
+
+def test_delegate_mode_falls_back_to_auto_with_warning():
+    """Invalid delegate values should use the portable AUTO policy."""
+    warnings = []
+
+    mode = parse_delegate_mode('accelerator', warnings.append)
+
+    assert mode is DelegateMode.AUTO
+    assert warnings == [
+        "Invalid delegate 'ACCELERATOR', falling back to AUTO. "
+        "Expected 'AUTO', 'CPU', or 'GPU'."
+    ]
+
+
+@pytest.mark.parametrize(
+    ('system_name', 'wsl', 'expected'),
+    [
+        ('Linux', False, DelegateMode.GPU),
+        ('Linux', True, DelegateMode.CPU),
+        ('Darwin', False, DelegateMode.CPU),
+        ('Windows', False, DelegateMode.CPU),
+    ],
+)
+def test_auto_delegate_uses_platform_preference(system_name, wsl, expected):
+    """AUTO should retain the existing native-Linux GPU preference."""
+    selection = select_delegate(
+        DelegateMode.AUTO,
+        system_name=system_name,
+        wsl=wsl,
+    )
+
+    assert selection.preferred is expected
 
 
 def test_monotonic_timestamp_advances_duplicate_and_older_values():
@@ -142,6 +179,96 @@ def test_landmarker_factory_adds_callback_only_for_live_stream():
         'model_asset_path': '/model.task',
         'delegate': 'gpu',
     }
+
+
+def test_auto_delegate_falls_back_to_cpu_after_gpu_failure(monkeypatch):
+    """AUTO should retry CPU when native-Linux GPU initialization fails."""
+    attempts = []
+    warnings = []
+    information = []
+
+    class FailingGpuLandmarker:
+        @classmethod
+        def create_from_options(cls, options):
+            delegate = options.values['base_options'].values['delegate']
+            attempts.append(delegate)
+            if delegate == 'gpu':
+                raise RuntimeError('GPU unavailable')
+            return options
+
+    monkeypatch.setattr(
+        'mediapipe_mocap.mediapipe_runtime.platform.system',
+        lambda: 'Linux',
+    )
+    monkeypatch.setattr(
+        'mediapipe_mocap.mediapipe_runtime._is_wsl',
+        lambda: False,
+    )
+    config = HandLandmarkerConfig(
+        model_asset_path='/model.task',
+        running_mode=RuntimeMode.VIDEO,
+        num_hands=1,
+        min_hand_detection_confidence=0.5,
+        min_hand_presence_confidence=0.5,
+        min_tracking_confidence=0.5,
+    )
+
+    options = create_hand_landmarker_with_delegate(
+        config,
+        requested_delegate=DelegateMode.AUTO,
+        result_callback=None,
+        base_options_type=_Options,
+        delegate_type=SimpleNamespace(CPU='cpu', GPU='gpu'),
+        landmarker_options_type=_Options,
+        landmarker_type=FailingGpuLandmarker,
+        running_mode_type=SimpleNamespace(VIDEO='video', LIVE_STREAM='live'),
+        info=information.append,
+        warn=warnings.append,
+    )
+
+    assert attempts == ['gpu', 'cpu']
+    assert options.values['base_options'].values['delegate'] == 'cpu'
+    assert warnings == [
+        'GPU delegate initialization failed in AUTO mode; '
+        'falling back to CPU: GPU unavailable'
+    ]
+    assert information == [
+        'Platform: Linux (native). Using CPU delegate (AUTO fallback).'
+    ]
+
+
+def test_explicit_gpu_failure_is_not_hidden():
+    """Explicit GPU selection should surface initialization failures."""
+    class FailingLandmarker:
+        @classmethod
+        def create_from_options(cls, options):
+            raise RuntimeError('GPU unavailable')
+
+    config = HandLandmarkerConfig(
+        model_asset_path='/model.task',
+        running_mode=RuntimeMode.VIDEO,
+        num_hands=1,
+        min_hand_detection_confidence=0.5,
+        min_hand_presence_confidence=0.5,
+        min_tracking_confidence=0.5,
+    )
+
+    with pytest.raises(RuntimeError, match='GPU unavailable'):
+        create_hand_landmarker_with_delegate(
+            config,
+            requested_delegate=DelegateMode.GPU,
+            result_callback=None,
+            base_options_type=_Options,
+            delegate_type=SimpleNamespace(CPU='cpu', GPU='gpu'),
+            landmarker_options_type=_Options,
+            landmarker_type=FailingLandmarker,
+            running_mode_type=SimpleNamespace(
+                VIDEO='video',
+                LIVE_STREAM='live',
+            ),
+            info=lambda message: None,
+            warn=lambda message: None,
+        )
 
 
 def test_header_timestamp_conversions():

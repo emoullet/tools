@@ -27,7 +27,6 @@
 # POSSIBILITY OF SUCH DAMAGE.
 
 import os
-import platform
 import sys
 from typing import Iterable
 
@@ -78,63 +77,10 @@ def _add_venv_site_packages_to_path():
             f'python{sys.version_info.major}.{sys.version_info.minor}',
             'site-packages',
         )
-        if os.path.isdir(site_packages) and site_packages not in sys.path:
-            sys.path.insert(0, site_packages)
+        if os.path.isdir(site_packages):
+            if site_packages not in sys.path:
+                sys.path.insert(0, site_packages)
             return
-
-
-def is_wsl() -> bool:
-    """
-    Check if running on Windows Subsystem for Linux.
-
-    Returns
-    -------
-    bool
-        True when the Linux kernel version reports WSL, otherwise False.
-
-    """
-    try:
-        with open('/proc/version', 'r') as f:
-            proc_version = f.read().lower()
-            return 'microsoft' in proc_version or 'wsl' in proc_version
-    except Exception:
-        return False
-
-
-def get_best_mediapipe_delegate(mp_module, logger):
-    """
-    Choose the fastest MediaPipe delegate known to work on this platform.
-
-    Parameters
-    ----------
-    mp_module : module
-        Imported ``mediapipe`` module. It must expose
-        ``tasks.BaseOptions.Delegate`` so the selected delegate enum can be
-        returned directly to MediaPipe task options.
-    logger : object
-        ROS-style logger with an ``info`` method. The function logs the
-        detected platform label and whether CPU or GPU execution was selected.
-
-    Returns
-    -------
-    object
-        MediaPipe ``BaseOptions.Delegate`` enum value to pass to task options.
-
-    """
-    system = platform.system()
-    delegate = mp_module.tasks.BaseOptions.Delegate.CPU
-    delegate_name = 'CPU'
-    if system == 'Linux':
-        if not is_wsl():
-            system = 'Linux (native)'
-            delegate = mp_module.tasks.BaseOptions.Delegate.GPU
-            delegate_name = 'GPU'
-        else:
-            system = 'WSL (Windows Subsystem for Linux)'
-    elif system == 'Darwin':
-        system = 'macOS'
-    logger.info(f'Platform: {system}. Using {delegate_name} delegate.')
-    return delegate
 
 
 def ensure_3_tuple(values: Iterable[float], fallback, logger=None, parameter_name='value'):

@@ -40,6 +40,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
+import platform
 from threading import Lock
 from typing import Any, Generic, Protocol, TypeVar
 
@@ -68,6 +69,23 @@ class RuntimeMode(Enum):
     LIVE_STREAM = 'LIVE_STREAM'
 
 
+class DelegateMode(Enum):
+    """User-selectable MediaPipe execution delegate policy."""
+
+    AUTO = 'AUTO'
+    CPU = 'CPU'
+    GPU = 'GPU'
+
+
+@dataclass(frozen=True)
+class DelegateSelection:
+    """Resolved delegate attempt and the platform label used for logging."""
+
+    requested: DelegateMode
+    preferred: DelegateMode
+    platform_label: str
+
+
 def parse_running_mode(
     value: str,
     warn: Callable[[str], None] | None = None,
@@ -83,6 +101,72 @@ def parse_running_mode(
                 "Expected 'VIDEO' or 'LIVE_STREAM'."
             )
         return RuntimeMode.VIDEO
+
+
+def parse_delegate_mode(
+    value: str,
+    warn: Callable[[str], None] | None = None,
+) -> DelegateMode:
+    """Parse a delegate parameter, falling back to AUTO when invalid."""
+    normalized = str(value).upper()
+    try:
+        return DelegateMode(normalized)
+    except ValueError:
+        if warn is not None:
+            warn(
+                f"Invalid delegate '{normalized}', falling back to AUTO. "
+                "Expected 'AUTO', 'CPU', or 'GPU'."
+            )
+        return DelegateMode.AUTO
+
+
+def select_delegate(
+    requested: DelegateMode,
+    *,
+    system_name: str | None = None,
+    wsl: bool | None = None,
+) -> DelegateSelection:
+    """Resolve AUTO to GPU on native Linux and CPU on other platforms."""
+    detected_system = system_name if system_name is not None else platform.system()
+    detected_wsl = (
+        wsl
+        if wsl is not None
+        else detected_system == 'Linux' and _is_wsl()
+    )
+
+    if detected_system == 'Linux' and detected_wsl:
+        platform_label = 'WSL (Windows Subsystem for Linux)'
+    elif detected_system == 'Linux':
+        platform_label = 'Linux (native)'
+    elif detected_system == 'Darwin':
+        platform_label = 'macOS'
+    else:
+        platform_label = detected_system
+
+    if requested is DelegateMode.AUTO:
+        preferred = (
+            DelegateMode.GPU
+            if detected_system == 'Linux' and not detected_wsl
+            else DelegateMode.CPU
+        )
+    else:
+        preferred = requested
+
+    return DelegateSelection(
+        requested=requested,
+        preferred=preferred,
+        platform_label=platform_label,
+    )
+
+
+def _is_wsl() -> bool:
+    """Return whether the Linux kernel version identifies a WSL environment."""
+    try:
+        with open('/proc/version', 'r', encoding='utf-8') as proc_version:
+            version = proc_version.read().lower()
+    except OSError:
+        return False
+    return 'microsoft' in version or 'wsl' in version
 
 
 @dataclass(frozen=True)
@@ -133,6 +217,65 @@ def create_hand_landmarker(
 
     options = landmarker_options_type(**options_kwargs)
     return landmarker_type.create_from_options(options)
+
+
+def create_hand_landmarker_with_delegate(
+    config: HandLandmarkerConfig,
+    *,
+    requested_delegate: DelegateMode,
+    result_callback: Callable[[Any, Any, int], None] | None,
+    base_options_type: Callable[..., Any],
+    delegate_type: Any,
+    landmarker_options_type: Callable[..., Any],
+    landmarker_type: Any,
+    running_mode_type: Any,
+    info: Callable[[str], None],
+    warn: Callable[[str], None],
+) -> Any:
+    """Create a landmarker and apply AUTO's GPU-to-CPU fallback policy."""
+    selection = select_delegate(requested_delegate)
+
+    def create_with(delegate_mode: DelegateMode) -> Any:
+        return create_hand_landmarker(
+            config,
+            delegate=getattr(delegate_type, delegate_mode.value),
+            result_callback=result_callback,
+            base_options_type=base_options_type,
+            landmarker_options_type=landmarker_options_type,
+            landmarker_type=landmarker_type,
+            running_mode_type=running_mode_type,
+        )
+
+    try:
+        landmarker = create_with(selection.preferred)
+    except Exception as error:
+        can_fallback = (
+            selection.requested is DelegateMode.AUTO
+            and selection.preferred is DelegateMode.GPU
+        )
+        if not can_fallback:
+            raise
+        warn(
+            'GPU delegate initialization failed in AUTO mode; '
+            f'falling back to CPU: {error}'
+        )
+        landmarker = create_with(DelegateMode.CPU)
+        info(
+            f'Platform: {selection.platform_label}. '
+            'Using CPU delegate (AUTO fallback).'
+        )
+        return landmarker
+
+    requested_label = (
+        'AUTO'
+        if selection.requested is DelegateMode.AUTO
+        else 'explicit'
+    )
+    info(
+        f'Platform: {selection.platform_label}. '
+        f'Using {selection.preferred.value} delegate ({requested_label}).'
+    )
+    return landmarker
 
 
 @dataclass

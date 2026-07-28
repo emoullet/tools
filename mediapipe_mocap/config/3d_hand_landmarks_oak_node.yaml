@@ -8,6 +8,7 @@ hand_landmarks_oak_3d_node:
     min_hand_presence_confidence: 0.5
     min_tracking_confidence: 0.5
     running_mode: "LIVE_STREAM"
+    delegate: "AUTO"  # Options: AUTO, CPU, GPU
 
     camera_frame_id: "oak_rgb_camera_optical_frame"
     rgb_width: 640

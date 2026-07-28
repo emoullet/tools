@@ -42,7 +42,6 @@ from std_msgs.msg import Bool, Header
 
 from mediapipe_mocap.hand_landmarks_common import (  # noqa: I100
     ensure_3_tuple,
-    get_best_mediapipe_delegate,
     prepare_runtime_imports,
 )
 from mediapipe_mocap.landmark_processing import (
@@ -53,10 +52,11 @@ from mediapipe_mocap.landmark_processing import (
 )
 from mediapipe_mocap.mediapipe_runtime import (
     AsyncContextStore,
-    create_hand_landmarker,
+    create_hand_landmarker_with_delegate,
     HandLandmarkerConfig,
     MonotonicTimestampGenerator,
     OAK_ASYNC_CONTEXT_LIMIT,
+    parse_delegate_mode,
     parse_running_mode,
     RuntimeMode,
     timestamp_sec_from_header,
@@ -128,6 +128,7 @@ class HandLandmarksOakNode(Node):
                 ('min_hand_presence_confidence', 0.5),
                 ('min_tracking_confidence', 0.5),
                 ('running_mode', 'LIVE_STREAM'),
+                ('delegate', 'AUTO'),
                 ('camera_frame_id', 'oak_rgb_camera_optical_frame'),
                 ('rgb_width', 640),
                 ('rgb_height', 400),
@@ -253,7 +254,11 @@ class HandLandmarksOakNode(Node):
             self.get_logger().warning,
         )
         running_mode_param = self.running_mode.value
-        self.landmarker = create_hand_landmarker(
+        delegate_mode = parse_delegate_mode(
+            self._get_str('delegate'),
+            self.get_logger().warning,
+        )
+        self.landmarker = create_hand_landmarker_with_delegate(
             HandLandmarkerConfig(
                 model_asset_path=self.model_path,
                 running_mode=self.running_mode,
@@ -268,16 +273,19 @@ class HandLandmarksOakNode(Node):
                     'min_tracking_confidence'
                 ),
             ),
-            delegate=get_best_mediapipe_delegate(mp, self.get_logger()),
+            requested_delegate=delegate_mode,
             result_callback=(
                 self._on_live_stream_result
                 if self.running_mode is RuntimeMode.LIVE_STREAM
                 else None
             ),
             base_options_type=BaseOptions,
+            delegate_type=BaseOptions.Delegate,
             landmarker_options_type=HandLandmarkerOptions,
             landmarker_type=HandLandmarker,
             running_mode_type=RunningMode,
+            info=self.get_logger().info,
+            warn=self.get_logger().warning,
         )
 
         self.landmarks_pub = self.create_publisher(PointCloud, self.landmarks_topic, 10)
@@ -325,6 +333,7 @@ class HandLandmarksOakNode(Node):
             f'  raw_topic        = {self.raw_landmarks_topic or "<disabled>"}\n'
             f'  model_path       = {self.model_path}\n'
             f'  running_mode     = {running_mode_param}\n'
+            f'  delegate         = {delegate_mode.value}\n'
             f'  rgb/fps          = {self.rgb_resolution[0]}x'
             f'{self.rgb_resolution[1]} @ {self.fps:.1f}\n'
             f'  normalized       = {self.publish_normalized_landmarks} '

@@ -36,7 +36,6 @@ from geometry_msgs.msg import Point32
 
 from mediapipe_mocap.hand_landmarks_common import (
     ensure_3_tuple,
-    get_best_mediapipe_delegate,
     prepare_runtime_imports,
 )
 from mediapipe_mocap.landmark_processing import (
@@ -46,10 +45,11 @@ from mediapipe_mocap.landmark_processing import (
 )
 from mediapipe_mocap.mediapipe_runtime import (
     AsyncContextStore,
-    create_hand_landmarker,
+    create_hand_landmarker_with_delegate,
     HandLandmarkerConfig,
     IMAGE_ASYNC_CONTEXT_LIMIT,
     MonotonicTimestampGenerator,
+    parse_delegate_mode,
     parse_running_mode,
     RuntimeMode,
     timestamp_ms_from_header,
@@ -125,6 +125,7 @@ class HandLandmarksNode(Node):
                 ('min_hand_presence_confidence', 0.5),
                 ('min_tracking_confidence', 0.5),
                 ('running_mode', 'VIDEO'),
+                ('delegate', 'AUTO'),
                 ('selfie_mode', False),
                 ('enable_one_euro_filter', False),
                 ('one_euro_frequency', 30.0),
@@ -164,6 +165,10 @@ class HandLandmarksNode(Node):
             self.get_logger().warning,
         )
         running_mode_param = self.running_mode.value
+        delegate_mode = parse_delegate_mode(
+            self.get_parameter('delegate').get_parameter_value().string_value,
+            self.get_logger().warning,
+        )
         self.selfie_mode = (
             self.get_parameter('selfie_mode').get_parameter_value().bool_value
         )
@@ -265,14 +270,11 @@ class HandLandmarksNode(Node):
         # (width / min(width, height), height / min(width, height)).
         self.frame_normalization_factor = None
 
-        # Detect delegate: use GPU on native Linux, CPU on WSL or other systems
-        delegate = get_best_mediapipe_delegate(mp, self.get_logger())
-
         self._timestamps = MonotonicTimestampGenerator()
         self._async_contexts = AsyncContextStore[ImageAsyncContext](
             IMAGE_ASYNC_CONTEXT_LIMIT
         )
-        self.landmarker = create_hand_landmarker(
+        self.landmarker = create_hand_landmarker_with_delegate(
             HandLandmarkerConfig(
                 model_asset_path=model_path,
                 running_mode=self.running_mode,
@@ -281,16 +283,19 @@ class HandLandmarksNode(Node):
                 min_hand_presence_confidence=min_presence_conf,
                 min_tracking_confidence=min_track_conf,
             ),
-            delegate=delegate,
+            requested_delegate=delegate_mode,
             result_callback=(
                 self._on_live_stream_result
                 if self.running_mode is RuntimeMode.LIVE_STREAM
                 else None
             ),
             base_options_type=BaseOptions,
+            delegate_type=BaseOptions.Delegate,
             landmarker_options_type=HandLandmarkerOptions,
             landmarker_type=HandLandmarker,
             running_mode_type=RunningMode,
+            info=self.get_logger().info,
+            warn=self.get_logger().warning,
         )
 
         initial_reference = self.reference_state.snapshot().position
@@ -300,6 +305,7 @@ class HandLandmarksNode(Node):
             f'  landmarks_topic  = {landmarks_topic}\n'
             f'  model_path       = {model_path}\n'
             f'  running_mode     = {running_mode_param}\n'
+            f'  delegate         = {delegate_mode.value}\n'
             f'  selfie_mode      = {self.selfie_mode}\n'
             f'  prime_offload    = '
             f"{os.environ.get('__NV_PRIME_RENDER_OFFLOAD', '<unset>')} "
