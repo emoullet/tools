@@ -53,7 +53,6 @@ from mediapipe_mocap.mediapipe_runtime import (
 from mediapipe_mocap.reference import (
     ReferenceState,
     ResetRequestResult,
-    ResetTriggerMode,
 )
 from mediapipe_mocap.ros_qos import latest_reliable_qos
 from mediapipe_mocap.viewer import HandLandmarksViewer
@@ -194,7 +193,6 @@ class HandLandmarksNode(Node):
         self.reference_state = ReferenceState(
             initial_position=initial_reference,
             cooldown_sec=self.reset_reference_cooldown_sec,
-            trigger_mode=ResetTriggerMode.RISING_EDGE,
         )
         self.show_control_zones = (
             self.get_parameter('show_control_zones').get_parameter_value().bool_value

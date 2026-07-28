@@ -29,10 +29,10 @@
 """
 Thread-safe reference position and reset state shared by hand trackers.
 
-ROS callbacks request resets while MediaPipe result callbacks consume them.
+ROS callbacks request resets while frame-processing callbacks consume them.
 All mutable state is therefore owned by :class:`ReferenceState` and guarded by
 one internal lock. Callers receive immutable snapshots instead of references
-to mutable internal state.
+to mutable internal state. Boolean reset requests always use rising edges.
 """
 
 from __future__ import annotations
@@ -44,13 +44,6 @@ from typing import Sequence
 
 
 Point3D = tuple[float, float, float]
-
-
-class ResetTriggerMode(Enum):
-    """Boolean signal interpretation used for reference reset requests."""
-
-    RISING_EDGE = 'rising_edge'
-    TRUE_MESSAGE = 'true_message'
 
 
 class ResetRequestResult(Enum):
@@ -77,7 +70,6 @@ class ReferenceState:
 
     initial_position: Sequence[float]
     cooldown_sec: float
-    trigger_mode: ResetTriggerMode
     initially_initialized: bool = True
     initial_image_position: Sequence[float] | None = None
     _position: Point3D = field(init=False, repr=False)
@@ -125,12 +117,7 @@ class ReferenceState:
             previous_signal = self._last_signal
             self._last_signal = current_signal
 
-            if self.trigger_mode is ResetTriggerMode.RISING_EDGE:
-                triggered = current_signal and not previous_signal
-            else:
-                triggered = current_signal
-
-            if not triggered:
+            if not current_signal or previous_signal:
                 return ResetRequestResult.INACTIVE
 
             if (

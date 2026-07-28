@@ -66,7 +66,6 @@ from mediapipe_mocap.oak_depth import (
 from mediapipe_mocap.reference import (
     ReferenceState,
     ResetRequestResult,
-    ResetTriggerMode,
 )
 from mediapipe_mocap.viewer import HandLandmarksViewer
 
@@ -233,7 +232,6 @@ class OakHandLandmarksNode(Node):
         self.reference_state = ReferenceState(
             initial_position=initial_reference,
             cooldown_sec=self.reset_reference_cooldown_sec,
-            trigger_mode=ResetTriggerMode.TRUE_MESSAGE,
             initially_initialized=not self.auto_reference_on_first_detection,
         )
 
@@ -611,13 +609,14 @@ class OakHandLandmarksNode(Node):
 
     def reset_reference_callback(self, msg: Bool):
         """
-        Request 3D reference recentering on a true boolean signal.
+        Request 3D reference recentering on a rising boolean signal.
 
         Parameters
         ----------
         msg : std_msgs.msg.Bool
-            Reset command message. A true value queues recentering on the next
-            valid 3D hand, subject to ``reset_reference_cooldown_sec``.
+            Reset command message. A false-to-true transition queues recentering
+            on the next valid 3D hand, subject to
+            ``reset_reference_cooldown_sec``.
 
         """
         now_sec = self.get_clock().now().nanoseconds * 1e-9

@@ -39,7 +39,7 @@ oak_hand_landmarks_node:
     tracked_landmark_index: 0
     initial_reference: [0.0, 0.0, 0.6]
     auto_reference_on_first_detection: true
-    reset_reference_topic: "/resetReference"
+    reset_reference_topic: "/reset_reference"
     reset_reference_cooldown_sec: 0.25
 
     enable_one_euro_filter: true

@@ -42,12 +42,9 @@ default reliable/volatile QoS policies.
 
 - `/camera/color/image_raw` (`sensor_msgs/Image`) - Input RGB images for the
   2D node, subscribed with reliable, volatile, keep-last depth-1 QoS.
-- `/reset_reference` (`std_msgs/Bool`) - The 2D default reset topic. A
-  false-to-true transition queues recentering on the next detected hand.
-- `/resetReference` (`std_msgs/Bool`) - The reset topic selected by the
-  shipped OAK YAML. Each `true` message queues recentering on the next valid
-  3D hand, subject to the cooldown. The OAK constructor default, when run
-  without that YAML, is `/reset_reference`.
+- `/reset_reference` (`std_msgs/Bool`) - The shared reset topic for both
+  producers. A false-to-true transition queues recentering on the next valid
+  detected hand, subject to the cooldown.
 
 ## 2D node parameters
 
@@ -225,7 +222,7 @@ Key OAK parameters:
 | `normalization_mode` | `axis` | `axis` clips each component with `saturation_zone`; `vector` clips by vector norm |
 | `dead_zone` | `0.05` | Display-only radius; it does not modify published points |
 | `auto_reference_on_first_detection` | `true` | Use the first valid tracked landmark as the 3D reference |
-| `reset_reference_topic` | `/resetReference` | Reset topic from the shipped OAK YAML |
+| `reset_reference_topic` | `/reset_reference` | Reset topic shared by both producers |
 | `enable_one_euro_filter` | `true` | Enable shared One Euro filtering in the shipped OAK YAML |
 
 ### Visualization
@@ -315,7 +312,7 @@ ros2 launch mediapipe_mocap oak_hand_landmarks_launch.py
 | `dead_zone` | 0.05 | Display-only dead-zone radius used by the OAK feedback overlay |
 | `saturation_zone` | 0.4 | XYZ saturation distance used by normalization and the feedback overlay |
 | `landmark_index` | 0 | Tracked landmark index (0-20) for OAK feedback overlay |
-| `reset_reference_topic` | `/resetReference` | Reset topic loaded from the shipped OAK YAML |
+| `reset_reference_topic` | `/reset_reference` | Reset topic loaded from the shipped OAK YAML |
 
 ### usb_cam_hand_landmarks_launch.py
 Complete pipeline using the maintained ROS 2 `usb_cam` driver. The raw camera

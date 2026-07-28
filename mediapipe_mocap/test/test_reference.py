@@ -31,7 +31,6 @@
 from mediapipe_mocap.reference import (
     ReferenceState,
     ResetRequestResult,
-    ResetTriggerMode,
 )
 
 
@@ -40,7 +39,6 @@ def test_rising_edge_mode_requires_false_between_requests():
     state = ReferenceState(
         initial_position=(0.5, 0.5, 0.0),
         cooldown_sec=0.0,
-        trigger_mode=ResetTriggerMode.RISING_EDGE,
     )
 
     assert state.request_reset(False, 0.0) is ResetRequestResult.INACTIVE
@@ -55,30 +53,16 @@ def test_cooldown_rejects_early_rising_edge():
     state = ReferenceState(
         initial_position=(0.5, 0.5, 0.0),
         cooldown_sec=0.5,
-        trigger_mode=ResetTriggerMode.RISING_EDGE,
     )
 
     assert state.request_reset(True, 1.0) is ResetRequestResult.ACCEPTED
-    assert state.request_reset(False, 1.1) is ResetRequestResult.INACTIVE
-    assert state.request_reset(True, 1.2) is ResetRequestResult.COOLDOWN
+    assert state.request_reset(True, 1.1) is ResetRequestResult.INACTIVE
+    assert state.request_reset(False, 1.2) is ResetRequestResult.INACTIVE
     assert state.snapshot().pending_reset
 
-    assert state.request_reset(False, 1.3) is ResetRequestResult.INACTIVE
+    assert state.request_reset(True, 1.3) is ResetRequestResult.COOLDOWN
+    assert state.request_reset(False, 1.4) is ResetRequestResult.INACTIVE
     assert state.request_reset(True, 1.5) is ResetRequestResult.ACCEPTED
-
-
-def test_true_message_mode_preserves_oak_reset_behavior():
-    """Every true message should trigger when it falls outside the cooldown."""
-    state = ReferenceState(
-        initial_position=(0.0, 0.0, 0.6),
-        cooldown_sec=0.25,
-        trigger_mode=ResetTriggerMode.TRUE_MESSAGE,
-    )
-
-    assert state.request_reset(True, 1.0) is ResetRequestResult.ACCEPTED
-    assert state.request_reset(True, 1.1) is ResetRequestResult.COOLDOWN
-    assert state.request_reset(True, 1.25) is ResetRequestResult.ACCEPTED
-    assert state.request_reset(False, 2.0) is ResetRequestResult.INACTIVE
 
 
 def test_pending_reset_is_consumed_by_reference_update():
@@ -86,7 +70,6 @@ def test_pending_reset_is_consumed_by_reference_update():
     state = ReferenceState(
         initial_position=(0.5, 0.5, 0.0),
         cooldown_sec=0.0,
-        trigger_mode=ResetTriggerMode.RISING_EDGE,
     )
 
     assert state.update_reference((0.1, 0.2, 0.3)) is None
@@ -105,7 +88,6 @@ def test_uninitialized_reference_can_be_set_automatically():
     state = ReferenceState(
         initial_position=(0.0, 0.0, 0.6),
         cooldown_sec=0.25,
-        trigger_mode=ResetTriggerMode.TRUE_MESSAGE,
         initially_initialized=False,
     )
 
