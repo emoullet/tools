@@ -65,7 +65,7 @@ def generate_launch_description():
 
     visualize_arg = DeclareLaunchArgument(
         'visualize',
-        default_value='true',
+        default_value='false',
         description='Show local OpenCV visualization window in oak_hand_landmarks_node',
     )
 

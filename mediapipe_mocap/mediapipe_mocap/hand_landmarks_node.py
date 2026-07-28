@@ -111,11 +111,12 @@ class HandLandmarksNode(Node):
                 ('min_tracking_confidence', 0.5),
                 ('delegate', 'AUTO'),
                 ('selfie_mode', False),
-                ('enable_one_euro_filter', False),
+                ('enable_one_euro_filter', True),
                 ('one_euro_frequency', 30.0),
                 ('one_euro_mincutoff', 1.0),
                 ('one_euro_beta', 0.1),
-                ('visualize', True),
+                ('one_euro_derivative_cutoff', 1.0),
+                ('visualize', False),
                 ('window_name', 'Hand Landmarks (Node)'),
                 ('reset_reference_topic', '/reset_reference'),
                 ('reset_reference_cooldown_sec', 0.25),
@@ -162,6 +163,11 @@ class HandLandmarksNode(Node):
         )
         one_euro_beta = float(
             self.get_parameter('one_euro_beta').get_parameter_value().double_value
+        )
+        one_euro_derivative_cutoff = float(
+            self.get_parameter('one_euro_derivative_cutoff')
+            .get_parameter_value()
+            .double_value
         )
         self.visualize = self.get_parameter('visualize').get_parameter_value().bool_value
         self.window_name = self.get_parameter('window_name').get_parameter_value().string_value
@@ -213,6 +219,7 @@ class HandLandmarksNode(Node):
         one_euro_frequency = max(one_euro_frequency, 1e-3)
         one_euro_mincutoff = max(one_euro_mincutoff, 1e-6)
         one_euro_beta = max(one_euro_beta, 0.0)
+        one_euro_derivative_cutoff = max(one_euro_derivative_cutoff, 1e-6)
 
         self.landmark_filters = None
         if self.enable_one_euro_filter:
@@ -223,6 +230,7 @@ class HandLandmarksNode(Node):
                     frequency=one_euro_frequency,
                     min_cutoff=one_euro_mincutoff,
                     beta=one_euro_beta,
+                    derivative_cutoff=one_euro_derivative_cutoff,
                 ),
             )
 
@@ -295,7 +303,8 @@ class HandLandmarksNode(Node):
                 'One Euro filter enabled with '
                 f'frequency={one_euro_frequency:.3f}, '
                 f'mincutoff={one_euro_mincutoff:.3f}, '
-                f'beta={one_euro_beta:.3f}'
+                f'beta={one_euro_beta:.3f}, '
+                f'derivative_cutoff={one_euro_derivative_cutoff:.3f}'
             )
 
         self._debug_performance = PeriodicPerformanceTracker()

@@ -11,8 +11,9 @@ hand_landmarks_node:
     selfie_mode: false # Mirror detector input; camera publishers may already mirror it
     enable_one_euro_filter: true
     one_euro_frequency: 30.0
-    one_euro_mincutoff: 5.
-    one_euro_beta: 100.
+    one_euro_mincutoff: 1.0
+    one_euro_beta: 0.1
+    one_euro_derivative_cutoff: 1.0
     visualize: true
     window_name: "Hand Landmarks (Node)"
     reset_reference_topic: "/reset_reference"

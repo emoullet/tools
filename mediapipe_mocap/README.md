@@ -61,11 +61,12 @@ a parameter file.
 | `min_hand_presence_confidence` | double | 0.5 | Minimum confidence for hand presence |
 | `min_tracking_confidence` | double | 0.5 | Minimum tracking confidence |
 | `delegate` | string | `AUTO` | Execution policy: `AUTO`, `CPU`, or `GPU`; `AUTO` prefers GPU on native Linux and retries CPU if GPU initialization fails |
-| `enable_one_euro_filter` | bool | false | Enable One Euro smoothing on each landmark coordinate |
+| `enable_one_euro_filter` | bool | true | Enable One Euro smoothing on each landmark coordinate |
 | `one_euro_frequency` | double | 30.0 | Expected landmark update frequency in Hz |
 | `one_euro_mincutoff` | double | 1.0 | Minimum cutoff frequency (lower = smoother) |
 | `one_euro_beta` | double | 0.1 | Speed coefficient (higher = more responsive) |
-| `visualize` | bool | true | Show a local OpenCV window with landmarks overlay |
+| `one_euro_derivative_cutoff` | double | 1.0 | Derivative low-pass cutoff frequency in Hz |
+| `visualize` | bool | false | Show a local OpenCV window with landmarks overlay |
 | `window_name` | string | `Hand Landmarks (Node)` | Window title when `visualize` is enabled |
 | `reset_reference_topic` | string | `/reset_reference` | Topic used to recenter the hand reference |
 | `reset_reference_cooldown_sec` | double | 0.25 | Minimum time between accepted reference resets |
@@ -75,11 +76,11 @@ a parameter file.
 | `saturation_zone` | double | 0.3 | Display-only saturation boundary used by the viewer |
 | `tracked_landmark_index` | int | 0 | Landmark used for reference reset and control-zone feedback |
 
-The shipped `config/hand_landmarks_node.yaml` enables One Euro filtering with
-`mincutoff=5.0` and `beta=100.0`, and enables visualization. The standalone
-`hand_landmarks_launch.py` still loads that YAML but overrides
-`visualize=false`. The USB-camera launch uses the YAML defaults and overrides
-`selfie_mode=true`.
+The built-in defaults and shipped `config/hand_landmarks_node.yaml` both enable
+One Euro filtering with `frequency=30.0`, `mincutoff=1.0`, `beta=0.1`, and
+`derivative_cutoff=1.0`. The shipped YAML enables visualization, while the
+standalone launch overrides it to `false`. The USB-camera launch uses the YAML
+default and overrides `selfie_mode=true`.
 
 ## Usage
 
@@ -223,7 +224,14 @@ Key OAK parameters:
 | `dead_zone` | `0.05` | Display-only radius; it does not modify published points |
 | `auto_reference_on_first_detection` | `true` | Use the first valid tracked landmark as the 3D reference |
 | `reset_reference_topic` | `/reset_reference` | Reset topic shared by both producers |
-| `enable_one_euro_filter` | `true` | Enable shared One Euro filtering in the shipped OAK YAML |
+| `enable_one_euro_filter` | `true` | Enable shared One Euro filtering |
+| `one_euro_mincutoff` | `1.0` | Minimum cutoff frequency in Hz |
+| `one_euro_beta` | `0.1` | Speed coefficient |
+| `one_euro_derivative_cutoff` | `1.0` | Derivative low-pass cutoff frequency in Hz |
+| `visualize` | `true` | Show a local OpenCV window when loading the shipped OAK YAML; the standalone OAK launch overrides this to `false` |
+
+The OAK filter derives its nominal fallback frequency from `fps`; filtering
+normally uses the timestamp interval between consecutive frames.
 
 ### Visualization
 
@@ -305,7 +313,7 @@ ros2 launch mediapipe_mocap oak_hand_landmarks_launch.py
 | `fps` | 50.0 | OAK camera FPS |
 | `rgb_width` | 640 | OAK RGB/depth output width in pixels |
 | `rgb_height` | 400 | OAK RGB/depth output height in pixels |
-| `visualize` | true | Show local OpenCV visualization window |
+| `visualize` | false | Show local OpenCV visualization window |
 | `window_name` | `3D Hand Landmarks OAK` | Window title when `visualize` is enabled |
 | `publish_normalized_landmarks` | true | Publish normalized control landmarks instead of metric 3D landmarks |
 | `raw_landmarks_topic` | empty | Optional topic for metric camera-frame landmarks before normalization |

@@ -121,7 +121,7 @@ class OakHandLandmarksNode(Node):
                 ('camera_frame_id', 'oak_rgb_camera_optical_frame'),
                 ('rgb_width', 640),
                 ('rgb_height', 400),
-                ('fps', 30.0),
+                ('fps', 50.0),
                 ('rgb_socket', 'CAM_A'),
                 ('left_socket', 'CAM_B'),
                 ('right_socket', 'CAM_C'),
@@ -148,11 +148,11 @@ class OakHandLandmarksNode(Node):
                 ('auto_reference_on_first_detection', True),
                 ('reset_reference_topic', '/reset_reference'),
                 ('reset_reference_cooldown_sec', 0.25),
-                ('enable_one_euro_filter', False),
-                ('one_euro_frequency', 30.0),
+                ('enable_one_euro_filter', True),
                 ('one_euro_mincutoff', 1.0),
                 ('one_euro_beta', 0.1),
-                ('visualize', True),
+                ('one_euro_derivative_cutoff', 1.0),
+                ('visualize', False),
                 ('window_name', '3D Hand Landmarks OAK'),
                 ('show_control_zones', True),
             ],
@@ -235,17 +235,21 @@ class OakHandLandmarksNode(Node):
             initially_initialized=not self.auto_reference_on_first_detection,
         )
 
-        one_euro_frequency = max(self._get_float('one_euro_frequency'), 1e-3)
         one_euro_mincutoff = max(self._get_float('one_euro_mincutoff'), 1e-6)
         one_euro_beta = max(self._get_float('one_euro_beta'), 0.0)
+        one_euro_derivative_cutoff = max(
+            self._get_float('one_euro_derivative_cutoff'),
+            1e-6,
+        )
         self.landmark_filters = None
         if self.enable_one_euro_filter:
             self.landmark_filters = LandmarkFilterBank(
                 self.num_hands,
                 OneEuroFilterConfig(
-                    frequency=one_euro_frequency,
+                    frequency=self.fps,
                     min_cutoff=one_euro_mincutoff,
                     beta=one_euro_beta,
+                    derivative_cutoff=one_euro_derivative_cutoff,
                 ),
             )
 
@@ -324,6 +328,14 @@ class OakHandLandmarksNode(Node):
             f'  one_euro_filter  = {self.enable_one_euro_filter}\n'
             f'  visualize        = {self.visualize}'
         )
+        if self.enable_one_euro_filter:
+            self.get_logger().info(
+                'One Euro filter enabled with '
+                f'frequency={self.fps:.3f} (camera fps), '
+                f'mincutoff={one_euro_mincutoff:.3f}, '
+                f'beta={one_euro_beta:.3f}, '
+                f'derivative_cutoff={one_euro_derivative_cutoff:.3f}'
+            )
 
     def _get_str(self, name):
         """
