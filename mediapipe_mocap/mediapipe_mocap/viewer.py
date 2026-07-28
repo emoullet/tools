@@ -32,6 +32,7 @@ import time
 
 import cv2
 
+from mediapipe_mocap.mediapipe_runtime import PeriodicPerformanceTracker
 import numpy as np
 
 
@@ -48,10 +49,20 @@ HAND_CONNECTIONS = [
 class HandLandmarksViewer:
     """Render hand-landmark diagnostics and manage one OpenCV window."""
 
-    def __init__(self, window_name):
+    def __init__(
+        self,
+        window_name,
+        *,
+        performance_interval_sec=0.5,
+        clock=time.monotonic,
+    ):
         """Initialize the viewer without opening a window."""
         self.window_name = str(window_name)
-        self._last_frame_time = time.time()
+        self._performance = PeriodicPerformanceTracker(
+            interval_sec=performance_interval_sec,
+            clock=clock,
+        )
+        self._performance_snapshot = None
 
     def show_2d(
         self,
@@ -108,13 +119,11 @@ class HandLandmarksViewer:
         """
         annotated = image.copy()
         self._draw_hands(annotated, image_hands)
-        performance_text = (
-            f'MP: {float(mediapipe_time_sec) * 1000.0:.1f}ms  '
-            f'missing depth: {int(missing_depth_count)}'
-            if mediapipe_time_sec is not None
-            else f'missing depth: {int(missing_depth_count)}'
+        self._draw_performance_overlay(
+            annotated,
+            mediapipe_time_sec,
+            status_text=f'missing depth: {int(missing_depth_count)}',
         )
-        self._draw_performance_overlay(annotated, status_text=performance_text)
         self._draw_3d_reference_overlay(
             annotated,
             primary_metric_hand,
@@ -167,27 +176,38 @@ class HandLandmarksViewer:
         mediapipe_time_sec=None,
         status_text=None,
     ):
-        """Draw frame rate and a processing-status line."""
-        now = time.time()
-        elapsed = now - self._last_frame_time
-        if elapsed > 0.0:
+        """Draw cached window metrics and a current-frame status line."""
+        completed = self._performance.tick(mediapipe_time_sec)
+        if completed is not None:
+            self._performance_snapshot = completed
+
+        if self._performance_snapshot is not None:
             cv2.putText(
                 image,
-                f'FPS: {1.0 / elapsed:.1f}',
+                f'FPS: {self._performance_snapshot.rate_hz:.1f}',
                 (10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 1,
                 (0, 255, 0),
                 2,
             )
-        self._last_frame_time = now
 
-        if status_text is None and mediapipe_time_sec is not None:
-            status_text = f'MP: {float(mediapipe_time_sec) * 1000.0:.1f}ms'
+        status_parts = []
+        if (
+            self._performance_snapshot is not None
+            and self._performance_snapshot.average_duration_sec is not None
+        ):
+            status_parts.append(
+                'MP avg: '
+                f'{self._performance_snapshot.average_duration_sec * 1000.0:.1f}ms'
+            )
         if status_text is not None:
+            status_parts.append(status_text)
+
+        if status_parts:
             cv2.putText(
                 image,
-                status_text,
+                '  '.join(status_parts),
                 (10, 70),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.8,

@@ -233,7 +233,9 @@ Key OAK parameters:
 Hand-landmark visualization is built into the landmark producer nodes. Enable it
 with the `visualize` parameter and select the OpenCV window title with
 `window_name`. The shared, ROS-independent implementation is available to Python
-callers as `mediapipe_mocap.viewer.HandLandmarksViewer`.
+callers as `mediapipe_mocap.viewer.HandLandmarksViewer`. The performance overlay
+refreshes half-second window averages for FPS and MediaPipe processing time;
+current-frame status such as missing OAK depth remains live.
 
 ### Configuration
 

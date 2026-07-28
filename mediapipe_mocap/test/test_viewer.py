@@ -34,6 +34,18 @@ from mediapipe_mocap import viewer
 import numpy as np  # noqa: I100,I201
 
 
+class _Clock:
+    """Controllable monotonic clock used by viewer performance tests."""
+
+    def __init__(self):
+        """Start at zero seconds."""
+        self.now = 0.0
+
+    def __call__(self):
+        """Return the current test time."""
+        return self.now
+
+
 def _patch_opencv(monkeypatch, key=-1):
     """Replace OpenCV GUI and drawing calls with recording mocks."""
     calls = {
@@ -96,10 +108,12 @@ def test_show_2d_draws_landmarks_connections_and_reference(monkeypatch):
 def test_show_3d_draws_metric_status_and_projected_zone(monkeypatch):
     """The 3D renderer should project its metric saturation zone and status."""
     calls = _patch_opencv(monkeypatch)
+    clock = _Clock()
     image = np.zeros((100, 200, 3), dtype=np.uint8)
     image_hand = [SimpleNamespace(x=0.5, y=0.5, z=0.0)]
     metric_hand = [SimpleNamespace(x=0.2, y=0.0, z=0.5)]
-    hand_viewer = viewer.HandLandmarksViewer('3D')
+    hand_viewer = viewer.HandLandmarksViewer('3D', clock=clock)
+    clock.now = 0.5
 
     exit_requested = hand_viewer.show_3d(
         image,
@@ -119,10 +133,33 @@ def test_show_3d_draws_metric_status_and_projected_zone(monkeypatch):
 
     assert any(args[2] == 80 for args, _ in calls['circle'])
     text = [args[1] for args, _ in calls['putText']]
-    assert 'MP: 10.0ms  missing depth: 2' in text
+    assert 'FPS: 2.0' in text
+    assert 'MP avg: 10.0ms  missing depth: 2' in text
     assert 'Ref3D: (0.00, 0.00, 0.50) m' in text
     assert 'LM[0] ACTIVE d=(0.20, 0.00, 0.00) m' in text
     assert not exit_requested
+
+
+def test_performance_overlay_updates_once_per_window(monkeypatch):
+    """Viewer metrics should remain stable until the next window completes."""
+    calls = _patch_opencv(monkeypatch)
+    clock = _Clock()
+    image = np.zeros((100, 200, 3), dtype=np.uint8)
+    hand_viewer = viewer.HandLandmarksViewer('Performance', clock=clock)
+
+    clock.now = 0.25
+    hand_viewer.show_2d(image, [], mediapipe_time_sec=0.01)
+    assert calls['putText'] == []
+
+    clock.now = 0.5
+    hand_viewer.show_2d(image, [], mediapipe_time_sec=0.03)
+    text = [args[1] for args, _ in calls['putText']]
+    assert text[-2:] == ['FPS: 4.0', 'MP avg: 20.0ms']
+
+    clock.now = 0.6
+    hand_viewer.show_2d(image, [], mediapipe_time_sec=0.10)
+    text = [args[1] for args, _ in calls['putText']]
+    assert text[-2:] == ['FPS: 4.0', 'MP avg: 20.0ms']
 
 
 def test_close_destroys_only_the_configured_window(monkeypatch):

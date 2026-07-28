@@ -46,7 +46,7 @@ from mediapipe_mocap.mediapipe_runtime import (
     HandLandmarkerConfig,
     HandLandmarkerRuntime,
     parse_delegate_mode,
-    PeriodicRateTracker,
+    PeriodicPerformanceTracker,
     timestamp_ms_from_header,
     timestamp_sec_from_header,
 )
@@ -300,7 +300,7 @@ class HandLandmarksNode(Node):
                 f'beta={one_euro_beta:.3f}'
             )
 
-        self._debug_rate = PeriodicRateTracker()
+        self._debug_performance = PeriodicPerformanceTracker()
 
     # -------------------------------------------------------------
     # Image callback: convert ROS image → MediaPipe Image → detect
@@ -507,9 +507,11 @@ class HandLandmarksNode(Node):
 
         # --- FPS MEASUREMENT (debug mode only) ---
         if self.get_logger().is_enabled_for(rclpy.logging.LoggingSeverity.DEBUG):
-            fps = self._debug_rate.tick()
-            if fps is not None:
-                self.get_logger().debug(f'Mediapipe FPS = {fps:.2f}')
+            performance = self._debug_performance.tick()
+            if performance is not None:
+                self.get_logger().debug(
+                    f'Mediapipe FPS = {performance.rate_hz:.2f}'
+                )
 
     def destroy_node(self):
         """Close MediaPipe and OpenCV resources before node shutdown."""

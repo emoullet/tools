@@ -54,7 +54,7 @@ from mediapipe_mocap.mediapipe_runtime import (
     HandLandmarkerConfig,
     HandLandmarkerRuntime,
     parse_delegate_mode,
-    PeriodicRateTracker,
+    PeriodicPerformanceTracker,
     timestamp_sec_from_header,
 )
 from mediapipe_mocap.oak_depth import (
@@ -300,7 +300,7 @@ class HandLandmarksOakNode(Node):
         self.sync_queue = None
         self.capture_thread = None
         self.running = False
-        self._debug_rate = PeriodicRateTracker()
+        self._debug_performance = PeriodicPerformanceTracker()
 
         self._build_and_start_pipeline()
         self.running = True
@@ -738,9 +738,11 @@ class HandLandmarksOakNode(Node):
             )
 
         if self.get_logger().is_enabled_for(rclpy.logging.LoggingSeverity.DEBUG):
-            fps = self._debug_rate.tick()
-            if fps is not None:
-                self.get_logger().debug(f'OAK 3D hand FPS = {fps:.2f}')
+            performance = self._debug_performance.tick()
+            if performance is not None:
+                self.get_logger().debug(
+                    f'OAK 3D hand FPS = {performance.rate_hz:.2f}'
+                )
 
     def _build_3d_hand_landmarks(self, hand_landmarks, depth_mm, ts_sec, hand_idx):
         """

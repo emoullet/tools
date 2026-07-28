@@ -302,12 +302,20 @@ class HandLandmarkerRuntime:
         self._landmarker.close()
 
 
-class PeriodicRateTracker:
-    """Report an event rate once per fixed monotonic-clock interval."""
+@dataclass(frozen=True)
+class PerformanceSnapshot:
+    """Event rate and optional average duration for one completed window."""
+
+    rate_hz: float
+    average_duration_sec: float | None
+
+
+class PeriodicPerformanceTracker:
+    """Aggregate event rate and durations over fixed monotonic-clock windows."""
 
     def __init__(
         self,
-        interval_sec: float = 1.0,
+        interval_sec: float = 0.5,
         *,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -318,19 +326,38 @@ class PeriodicRateTracker:
         self._clock = clock
         self._window_start_sec = self._clock()
         self._event_count = 0
+        self._duration_total_sec = 0.0
+        self._duration_count = 0
 
-    def tick(self) -> float | None:
-        """Record one event and return its window rate when due."""
+    def tick(
+        self,
+        duration_sec: float | None = None,
+    ) -> PerformanceSnapshot | None:
+        """Record one event and return aggregate metrics when the window ends."""
         self._event_count += 1
+        if duration_sec is not None:
+            self._duration_total_sec += max(float(duration_sec), 0.0)
+            self._duration_count += 1
+
         now_sec = self._clock()
         elapsed_sec = now_sec - self._window_start_sec
         if elapsed_sec < self._interval_sec:
             return None
 
-        rate = self._event_count / elapsed_sec
+        average_duration_sec = (
+            self._duration_total_sec / self._duration_count
+            if self._duration_count > 0
+            else None
+        )
+        snapshot = PerformanceSnapshot(
+            rate_hz=self._event_count / elapsed_sec,
+            average_duration_sec=average_duration_sec,
+        )
         self._window_start_sec = now_sec
         self._event_count = 0
-        return rate
+        self._duration_total_sec = 0.0
+        self._duration_count = 0
+        return snapshot
 
 
 def timestamp_ms_from_header(header: _Header) -> int:

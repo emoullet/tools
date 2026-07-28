@@ -39,7 +39,7 @@ from mediapipe_mocap.mediapipe_runtime import (
     HandLandmarkerRuntime,
     MonotonicTimestampGenerator,
     parse_delegate_mode,
-    PeriodicRateTracker,
+    PeriodicPerformanceTracker,
     select_delegate,
     timestamp_ms_from_header,
     timestamp_sec_from_header,
@@ -165,17 +165,22 @@ def test_video_runtime_propagates_detection_errors():
         runtime.detect('image', 100)
 
 
-def test_periodic_rate_tracker_reports_completed_windows():
-    """Rate calculation should reset after each completed interval."""
+def test_periodic_performance_tracker_reports_completed_windows():
+    """Rate and average duration should reset after each completed interval."""
     clock = _Clock(10.0)
-    tracker = PeriodicRateTracker(interval_sec=1.0, clock=clock)
+    tracker = PeriodicPerformanceTracker(clock=clock)
 
     clock.now = 10.25
-    assert tracker.tick() is None
-    clock.now = 11.0
-    assert tracker.tick() == 2.0
-    clock.now = 13.0
-    assert tracker.tick() == 0.5
+    assert tracker.tick(0.01) is None
+    clock.now = 10.5
+    first = tracker.tick(0.03)
+    clock.now = 11.5
+    second = tracker.tick()
+
+    assert first.rate_hz == 4.0
+    assert first.average_duration_sec == pytest.approx(0.02)
+    assert second.rate_hz == 1.0
+    assert second.average_duration_sec is None
 
 
 @dataclass
