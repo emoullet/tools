@@ -61,6 +61,12 @@ from mediapipe_mocap.mediapipe_runtime import (
     RuntimeMode,
     timestamp_sec_from_header,
 )
+from mediapipe_mocap.oak_depth import (
+    CameraIntrinsics,
+    DepthProcessingConfig,
+    OakDepthProjector,
+    parse_missing_depth_strategy,
+)
 from mediapipe_mocap.reference import (
     ReferenceState,
     ResetRequestResult,
@@ -179,18 +185,30 @@ class HandLandmarksOakNode(Node):
             max(1, self._get_int('rgb_height')),
         )
         self.fps = max(1e-3, self._get_float('fps'))
-        self.depth_sample_radius_px = max(0, self._get_int('depth_sample_radius_px'))
-        self.min_depth_m = max(0.0, self._get_float('min_depth_m'))
-        self.max_depth_m = max(self.min_depth_m + 1e-6, self._get_float('max_depth_m'))
-        self.depth_percentile = min(100.0, max(0.0, self._get_float('depth_percentile')))
-        self.missing_depth_strategy = self._get_str('missing_depth_strategy').lower()
-        if self.missing_depth_strategy not in ('skip_frame', 'reuse_last', 'hand_median'):
-            self.get_logger().warning(
-                'Invalid missing_depth_strategy '
-                f"'{self.missing_depth_strategy}', falling back to 'reuse_last'."
-            )
-            self.missing_depth_strategy = 'reuse_last'
-        self.max_missing_depth_landmarks = max(0, self._get_int('max_missing_depth_landmarks'))
+        min_depth_m = max(0.0, self._get_float('min_depth_m'))
+        self.depth_config = DepthProcessingConfig(
+            sample_radius_px=max(
+                0,
+                self._get_int('depth_sample_radius_px'),
+            ),
+            min_depth_m=min_depth_m,
+            max_depth_m=max(
+                min_depth_m + 1e-6,
+                self._get_float('max_depth_m'),
+            ),
+            percentile=min(
+                100.0,
+                max(0.0, self._get_float('depth_percentile')),
+            ),
+            missing_strategy=parse_missing_depth_strategy(
+                self._get_str('missing_depth_strategy'),
+                self.get_logger().warning,
+            ),
+            max_missing_landmarks=max(
+                0,
+                self._get_int('max_missing_depth_landmarks'),
+            ),
+        )
         self.publish_normalized_landmarks = self._get_bool('publish_normalized_landmarks')
         self.normalization_mode = self._get_str('normalization_mode').lower()
         if self.normalization_mode not in ('axis', 'vector'):
@@ -303,10 +321,7 @@ class HandLandmarksOakNode(Node):
             10,
         )
 
-        self.fx = None
-        self.fy = None
-        self.cx = None
-        self.cy = None
+        self.depth_projector = None
         self.pipeline = None
         self.sync_queue = None
         self.capture_thread = None
@@ -315,10 +330,6 @@ class HandLandmarksOakNode(Node):
         self._async_contexts = AsyncContextStore[OakAsyncContext](
             OAK_ASYNC_CONTEXT_LIMIT
         )
-        self._last_depth_by_hand = [
-            [None for _ in range(21)]
-            for _ in range(self.num_hands)
-        ]
         self.last_debug_time = time.time()
         self.frame_count = 0
 
@@ -338,8 +349,9 @@ class HandLandmarksOakNode(Node):
             f'{self.rgb_resolution[1]} @ {self.fps:.1f}\n'
             f'  normalized       = {self.publish_normalized_landmarks} '
             f'({self.normalization_mode}, sat={self.saturation_zone:.3f})\n'
-            f'  depth_range      = [{self.min_depth_m:.2f}, {self.max_depth_m:.2f}] m '
-            f'radius={self.depth_sample_radius_px}px\n'
+            f'  depth_range      = [{self.depth_config.min_depth_m:.2f}, '
+            f'{self.depth_config.max_depth_m:.2f}] m '
+            f'radius={self.depth_config.sample_radius_px}px\n'
             f'  reset_reference  = {self.reset_reference_topic} '
             f'(auto_first={self.auto_reference_on_first_detection})\n'
             f'  one_euro_filter  = {self.enable_one_euro_filter}\n'
@@ -504,18 +516,21 @@ class HandLandmarksOakNode(Node):
 
         self.pipeline.start()
         calibration = self.pipeline.getDefaultDevice().readCalibration()
-        intrinsics = calibration.getCameraIntrinsics(
+        intrinsics_matrix = calibration.getCameraIntrinsics(
             rgb_socket,
             self.rgb_resolution[0],
             self.rgb_resolution[1],
         )
-        self.fx = float(intrinsics[0][0])
-        self.fy = float(intrinsics[1][1])
-        self.cx = float(intrinsics[0][2])
-        self.cy = float(intrinsics[1][2])
+        intrinsics = CameraIntrinsics.from_matrix(intrinsics_matrix)
+        self.depth_projector = OakDepthProjector(
+            intrinsics,
+            self.depth_config,
+            self.num_hands,
+        )
         self.get_logger().info(
             'OAK calibration loaded: '
-            f'fx={self.fx:.2f}, fy={self.fy:.2f}, cx={self.cx:.2f}, cy={self.cy:.2f}'
+            f'fx={intrinsics.fx:.2f}, fy={intrinsics.fy:.2f}, '
+            f'cx={intrinsics.cx:.2f}, cy={intrinsics.cy:.2f}'
         )
 
     def _capture_loop(self):
@@ -834,53 +849,22 @@ class HandLandmarksOakNode(Node):
             skipped.
 
         """
-        height, width = depth_mm.shape[:2]
-        sampled_depths = []
-        missing_indices = []
+        if self.depth_projector is None:
+            raise RuntimeError('OAK depth projector is not initialized')
 
-        for index, lm in enumerate(hand_landmarks):
-            if not (0.0 <= float(lm.x) <= 1.0 and 0.0 <= float(lm.y) <= 1.0):
-                sampled_depths.append(None)
-                missing_indices.append(index)
-                continue
-
-            u = int(round(float(lm.x) * (width - 1)))
-            v = int(round(float(lm.y) * (height - 1)))
-            depth_m = self._sample_depth_m(depth_mm, u, v)
-            if depth_m is None:
-                missing_indices.append(index)
-            sampled_depths.append(depth_m)
-
-        if len(missing_indices) > self.max_missing_depth_landmarks:
-            return None, None, len(missing_indices)
-
-        if missing_indices:
-            if self.missing_depth_strategy == 'skip_frame':
-                return None, None, len(missing_indices)
-
-            current_valid = [value for value in sampled_depths if value is not None]
-            hand_median = float(np.median(current_valid)) if current_valid else None
-            for index in missing_indices:
-                fallback_depth = None
-                if self.missing_depth_strategy == 'reuse_last':
-                    fallback_depth = self._last_depth_by_hand[hand_idx][index]
-                if fallback_depth is None and hand_median is not None:
-                    fallback_depth = hand_median
-                if fallback_depth is None:
-                    return None, None, len(missing_indices)
-                sampled_depths[index] = fallback_depth
+        projection = self.depth_projector.project_hand(
+            hand_landmarks,
+            depth_mm,
+            hand_idx,
+        )
+        if not projection.valid:
+            return None, None, projection.missing_depth_count
 
         metric_hand = []
         image_hand = []
-        for index, lm in enumerate(hand_landmarks):
-            u = float(lm.x) * (width - 1)
-            v = float(lm.y) * (height - 1)
-            z = float(sampled_depths[index])
-            self._last_depth_by_hand[hand_idx][index] = z
-            x = (u - self.cx) * z / self.fx
-            y = (v - self.cy) * z / self.fy
-
-            metric_point = Point32(x=float(x), y=float(y), z=float(z))
+        for index, (metric_point, image_point) in enumerate(
+            zip(projection.metric_points, projection.image_points)
+        ):
             if self.landmark_filters is not None:
                 metric_point = self.landmark_filters.filter_point(
                     hand_idx,
@@ -892,50 +876,13 @@ class HandLandmarksOakNode(Node):
             metric_hand.append(metric_point)
             image_hand.append(
                 Point32(
-                    x=float(lm.x),
-                    y=float(lm.y),
+                    x=float(image_point.x),
+                    y=float(image_point.y),
                     z=float(metric_point.z),
                 )
             )
 
-        return metric_hand, image_hand, len(missing_indices)
-
-    def _sample_depth_m(self, depth_mm, u: int, v: int):
-        """
-        Sample a valid depth value near an image-space landmark.
-
-        Parameters
-        ----------
-        depth_mm : numpy.ndarray
-            Depth image in millimeters.
-        u : int
-            Landmark x pixel coordinate used as the center of the sampling window.
-        v : int
-            Landmark y pixel coordinate used as the center of the sampling window.
-
-        Returns
-        -------
-        float | None
-            Depth in meters from the configured percentile of valid samples, or
-            ``None`` when no sample falls inside the configured depth range.
-
-        """
-        radius = self.depth_sample_radius_px
-        height, width = depth_mm.shape[:2]
-        x0 = max(0, u - radius)
-        x1 = min(width, u + radius + 1)
-        y0 = max(0, v - radius)
-        y1 = min(height, v + radius + 1)
-        roi = depth_mm[y0:y1, x0:x1]
-        if roi.size == 0:
-            return None
-
-        min_mm = self.min_depth_m * 1000.0
-        max_mm = self.max_depth_m * 1000.0
-        valid = roi[(roi >= min_mm) & (roi <= max_mm)]
-        if valid.size == 0:
-            return None
-        return float(np.percentile(valid, self.depth_percentile)) * 0.001
+        return metric_hand, image_hand, projection.missing_depth_count
 
     def _update_reference_if_needed(self, metric_hand, image_hand):
         """
@@ -1016,7 +963,7 @@ class HandLandmarksOakNode(Node):
             dead_zone=self.dead_zone,
             saturation_zone=self.saturation_zone,
             normalization_mode=self.normalization_mode,
-            focal_length_px=self.fx,
+            focal_length_px=self.depth_projector.intrinsics.fx,
         )
         if exit_requested:
             self.get_logger().info('Visualization window closed by user.')
