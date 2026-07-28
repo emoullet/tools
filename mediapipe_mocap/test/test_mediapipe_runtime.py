@@ -26,39 +26,25 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-"""Tests for MediaPipe construction and asynchronous runtime state."""
+"""Tests for MediaPipe construction and synchronous runtime state."""
 
 from dataclasses import dataclass
 from types import SimpleNamespace
 
 from mediapipe_mocap.mediapipe_runtime import (
-    AsyncContextStore,
     create_hand_landmarker,
     create_hand_landmarker_with_delegate,
     DelegateMode,
     HandLandmarkerConfig,
+    HandLandmarkerRuntime,
     MonotonicTimestampGenerator,
     parse_delegate_mode,
-    parse_running_mode,
-    RuntimeMode,
+    PeriodicRateTracker,
     select_delegate,
     timestamp_ms_from_header,
     timestamp_sec_from_header,
 )
 import pytest
-
-
-def test_running_mode_falls_back_to_video_with_warning():
-    """Invalid parameter values should preserve the current fallback."""
-    warnings = []
-
-    mode = parse_running_mode('not-a-mode', warnings.append)
-
-    assert mode is RuntimeMode.VIDEO
-    assert warnings == [
-        "Invalid running_mode 'NOT-A-MODE', falling back to VIDEO. "
-        "Expected 'VIDEO' or 'LIVE_STREAM'."
-    ]
 
 
 def test_delegate_mode_falls_back_to_auto_with_warning():
@@ -104,18 +90,92 @@ def test_monotonic_timestamp_advances_duplicate_and_older_values():
     assert timestamps.next_timestamp(200) == 200
 
 
-def test_async_context_store_evicts_oldest_context():
-    """Bounded storage should retain only the newest pending submissions."""
-    contexts = AsyncContextStore[str](max_pending=2)
+class _Clock:
+    """Controllable monotonic clock used by runtime timing tests."""
 
-    contexts.put(10, 'oldest')
-    contexts.put(20, 'middle')
-    contexts.put(30, 'newest')
+    def __init__(self, initial: float = 0.0):
+        """Start the clock at ``initial`` seconds."""
+        self.now = initial
 
-    assert contexts.pop(10) is None
-    assert contexts.pop(20) == 'middle'
-    assert contexts.pop(30) == 'newest'
-    assert contexts.pending_count == 0
+    def __call__(self):
+        """Return the current test time."""
+        return self.now
+
+
+class _FakeRuntimeLandmarker:
+    """Record detection calls made through HandLandmarkerRuntime."""
+
+    def __init__(self):
+        """Initialize call history and close state."""
+        self.calls = []
+        self.closed = False
+
+    def detect_for_video(self, image, timestamp_ms):
+        """Record and return a synchronous detection."""
+        self.calls.append(('video', image, timestamp_ms))
+        return f'result:{image}'
+
+    def close(self):
+        """Record resource closure."""
+        self.closed = True
+
+
+def test_video_runtime_owns_timestamp_timing_and_close():
+    """VIDEO mode should time calls and close the injected landmarker."""
+    clock = _Clock(10.0)
+
+    class TimedLandmarker(_FakeRuntimeLandmarker):
+        def detect_for_video(self, image, timestamp_ms):
+            result = super().detect_for_video(image, timestamp_ms)
+            clock.now += 0.25
+            return result
+
+    landmarker = TimedLandmarker()
+    runtime = HandLandmarkerRuntime(
+        landmarker,
+        clock=clock,
+    )
+
+    clock.now = 12.0
+    first = runtime.detect('first', 100)
+    clock.now = 15.5
+    second = runtime.detect('second', 100)
+    runtime.close()
+
+    assert first.result == 'result:first'
+    assert first.duration_sec == 0.25
+    assert second.result == 'result:second'
+    assert second.duration_sec == 0.25
+    assert landmarker.calls == [
+        ('video', 'first', 100),
+        ('video', 'second', 101),
+    ]
+    assert landmarker.closed
+
+
+def test_video_runtime_propagates_detection_errors():
+    """Synchronous detection errors should remain visible to the node."""
+    class FailingLandmarker(_FakeRuntimeLandmarker):
+        def detect_for_video(self, image, timestamp_ms):
+            raise RuntimeError('detection failed')
+
+    runtime = HandLandmarkerRuntime(FailingLandmarker())
+
+    with pytest.raises(RuntimeError, match='detection failed'):
+        runtime.detect('image', 100)
+
+
+def test_periodic_rate_tracker_reports_completed_windows():
+    """Rate calculation should reset after each completed interval."""
+    clock = _Clock(10.0)
+    tracker = PeriodicRateTracker(interval_sec=1.0, clock=clock)
+
+    clock.now = 10.25
+    assert tracker.tick() is None
+    clock.now = 11.0
+    assert tracker.tick() == 2.0
+    clock.now = 13.0
+    assert tracker.tick() == 0.5
 
 
 @dataclass
@@ -138,46 +198,30 @@ class _Landmarker:
         return options
 
 
-def test_landmarker_factory_adds_callback_only_for_live_stream():
-    """Injected construction should map runtime modes to MediaPipe modes."""
-    def callback(result, image, timestamp):
-        pass
-
-    running_modes = SimpleNamespace(VIDEO='video', LIVE_STREAM='live')
-    common = {
-        'model_asset_path': '/model.task',
-        'num_hands': 1,
-        'min_hand_detection_confidence': 0.5,
-        'min_hand_presence_confidence': 0.6,
-        'min_tracking_confidence': 0.7,
-    }
+def test_landmarker_factory_enforces_video_mode():
+    """Injected construction should always select MediaPipe VIDEO mode."""
+    config = HandLandmarkerConfig(
+        model_asset_path='/model.task',
+        num_hands=1,
+        min_hand_detection_confidence=0.5,
+        min_hand_presence_confidence=0.6,
+        min_tracking_confidence=0.7,
+    )
 
     video = create_hand_landmarker(
-        HandLandmarkerConfig(running_mode=RuntimeMode.VIDEO, **common),
+        config,
         delegate='cpu',
-        result_callback=None,
         base_options_type=_Options,
         landmarker_options_type=_Options,
         landmarker_type=_Landmarker,
-        running_mode_type=running_modes,
-    )
-    live = create_hand_landmarker(
-        HandLandmarkerConfig(running_mode=RuntimeMode.LIVE_STREAM, **common),
-        delegate='gpu',
-        result_callback=callback,
-        base_options_type=_Options,
-        landmarker_options_type=_Options,
-        landmarker_type=_Landmarker,
-        running_mode_type=running_modes,
+        running_mode_type=SimpleNamespace(VIDEO='video'),
     )
 
     assert video.values['running_mode'] == 'video'
     assert 'result_callback' not in video.values
-    assert live.values['running_mode'] == 'live'
-    assert live.values['result_callback'] is callback
-    assert live.values['base_options'].values == {
+    assert video.values['base_options'].values == {
         'model_asset_path': '/model.task',
-        'delegate': 'gpu',
+        'delegate': 'cpu',
     }
 
 
@@ -206,7 +250,6 @@ def test_auto_delegate_falls_back_to_cpu_after_gpu_failure(monkeypatch):
     )
     config = HandLandmarkerConfig(
         model_asset_path='/model.task',
-        running_mode=RuntimeMode.VIDEO,
         num_hands=1,
         min_hand_detection_confidence=0.5,
         min_hand_presence_confidence=0.5,
@@ -216,12 +259,11 @@ def test_auto_delegate_falls_back_to_cpu_after_gpu_failure(monkeypatch):
     options = create_hand_landmarker_with_delegate(
         config,
         requested_delegate=DelegateMode.AUTO,
-        result_callback=None,
         base_options_type=_Options,
         delegate_type=SimpleNamespace(CPU='cpu', GPU='gpu'),
         landmarker_options_type=_Options,
         landmarker_type=FailingGpuLandmarker,
-        running_mode_type=SimpleNamespace(VIDEO='video', LIVE_STREAM='live'),
+        running_mode_type=SimpleNamespace(VIDEO='video'),
         info=information.append,
         warn=warnings.append,
     )
@@ -246,7 +288,6 @@ def test_explicit_gpu_failure_is_not_hidden():
 
     config = HandLandmarkerConfig(
         model_asset_path='/model.task',
-        running_mode=RuntimeMode.VIDEO,
         num_hands=1,
         min_hand_detection_confidence=0.5,
         min_hand_presence_confidence=0.5,
@@ -257,15 +298,11 @@ def test_explicit_gpu_failure_is_not_hidden():
         create_hand_landmarker_with_delegate(
             config,
             requested_delegate=DelegateMode.GPU,
-            result_callback=None,
             base_options_type=_Options,
             delegate_type=SimpleNamespace(CPU='cpu', GPU='gpu'),
             landmarker_options_type=_Options,
             landmarker_type=FailingLandmarker,
-            running_mode_type=SimpleNamespace(
-                VIDEO='video',
-                LIVE_STREAM='live',
-            ),
+            running_mode_type=SimpleNamespace(VIDEO='video'),
             info=lambda message: None,
             warn=lambda message: None,
         )

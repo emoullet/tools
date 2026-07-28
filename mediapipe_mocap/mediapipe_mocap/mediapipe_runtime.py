@@ -27,12 +27,11 @@
 # POSSIBILITY OF SUCH DAMAGE.
 
 """
-Own MediaPipe construction, timestamps, and asynchronous result contexts.
+Own MediaPipe construction, timestamps, timing, and resource lifecycle.
 
 This module deliberately avoids importing MediaPipe or ROS. Callers inject the
-MediaPipe option and landmarker types, which keeps the runtime state directly
-unit-testable. Timestamp generators and context stores own their locks and may
-be shared by submission and MediaPipe callback threads.
+MediaPipe option and landmarker types, which keeps synchronous VIDEO-mode
+runtime behavior directly unit-testable.
 """
 
 from __future__ import annotations
@@ -42,11 +41,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 import platform
 from threading import Lock
+import time
 from typing import Any, Generic, Protocol, TypeVar
-
-
-IMAGE_ASYNC_CONTEXT_LIMIT = 120
-OAK_ASYNC_CONTEXT_LIMIT = 8
 
 
 class _Stamp(Protocol):
@@ -60,13 +56,6 @@ class _Header(Protocol):
     """Structural type for messages carrying a ROS-compatible stamp."""
 
     stamp: _Stamp
-
-
-class RuntimeMode(Enum):
-    """MediaPipe hand-landmarker running modes supported by the nodes."""
-
-    VIDEO = 'VIDEO'
-    LIVE_STREAM = 'LIVE_STREAM'
 
 
 class DelegateMode(Enum):
@@ -84,23 +73,6 @@ class DelegateSelection:
     requested: DelegateMode
     preferred: DelegateMode
     platform_label: str
-
-
-def parse_running_mode(
-    value: str,
-    warn: Callable[[str], None] | None = None,
-) -> RuntimeMode:
-    """Parse a mode parameter, preserving the existing VIDEO fallback."""
-    normalized = str(value).upper()
-    try:
-        return RuntimeMode(normalized)
-    except ValueError:
-        if warn is not None:
-            warn(
-                f"Invalid running_mode '{normalized}', falling back to VIDEO. "
-                "Expected 'VIDEO' or 'LIVE_STREAM'."
-            )
-        return RuntimeMode.VIDEO
 
 
 def parse_delegate_mode(
@@ -174,7 +146,6 @@ class HandLandmarkerConfig:
     """Values shared by USB and OAK MediaPipe hand-landmarker options."""
 
     model_asset_path: str
-    running_mode: RuntimeMode
     num_hands: int
     min_hand_detection_confidence: float
     min_hand_presence_confidence: float
@@ -185,24 +156,18 @@ def create_hand_landmarker(
     config: HandLandmarkerConfig,
     *,
     delegate: Any,
-    result_callback: Callable[[Any, Any, int], None] | None,
     base_options_type: Callable[..., Any],
     landmarker_options_type: Callable[..., Any],
     landmarker_type: Any,
     running_mode_type: Any,
 ) -> Any:
-    """Construct a landmarker from injected MediaPipe runtime types."""
-    running_mode = (
-        running_mode_type.LIVE_STREAM
-        if config.running_mode is RuntimeMode.LIVE_STREAM
-        else running_mode_type.VIDEO
-    )
+    """Construct a VIDEO-mode landmarker from injected MediaPipe types."""
     options_kwargs: dict[str, Any] = {
         'base_options': base_options_type(
             model_asset_path=config.model_asset_path,
             delegate=delegate,
         ),
-        'running_mode': running_mode,
+        'running_mode': running_mode_type.VIDEO,
         'num_hands': config.num_hands,
         'min_hand_detection_confidence': (
             config.min_hand_detection_confidence
@@ -210,11 +175,6 @@ def create_hand_landmarker(
         'min_hand_presence_confidence': config.min_hand_presence_confidence,
         'min_tracking_confidence': config.min_tracking_confidence,
     }
-    if config.running_mode is RuntimeMode.LIVE_STREAM:
-        if result_callback is None:
-            raise ValueError('LIVE_STREAM mode requires a result callback')
-        options_kwargs['result_callback'] = result_callback
-
     options = landmarker_options_type(**options_kwargs)
     return landmarker_type.create_from_options(options)
 
@@ -223,7 +183,6 @@ def create_hand_landmarker_with_delegate(
     config: HandLandmarkerConfig,
     *,
     requested_delegate: DelegateMode,
-    result_callback: Callable[[Any, Any, int], None] | None,
     base_options_type: Callable[..., Any],
     delegate_type: Any,
     landmarker_options_type: Callable[..., Any],
@@ -239,7 +198,6 @@ def create_hand_landmarker_with_delegate(
         return create_hand_landmarker(
             config,
             delegate=getattr(delegate_type, delegate_mode.value),
-            result_callback=result_callback,
             base_options_type=base_options_type,
             landmarker_options_type=landmarker_options_type,
             landmarker_type=landmarker_type,
@@ -280,7 +238,7 @@ def create_hand_landmarker_with_delegate(
 
 @dataclass
 class MonotonicTimestampGenerator:
-    """Generate strictly increasing integer timestamps across callback threads."""
+    """Generate strictly increasing integer timestamps across detection calls."""
 
     _last_timestamp_ms: int = field(default=-1, init=False, repr=False)
     _lock: Lock = field(default_factory=Lock, init=False, repr=False)
@@ -295,43 +253,84 @@ class MonotonicTimestampGenerator:
             return timestamp_ms
 
 
-ContextT = TypeVar('ContextT')
+ResultT = TypeVar('ResultT')
 
 
-class AsyncContextStore(Generic[ContextT]):
-    """Own a bounded timestamp-to-context map shared across callback threads."""
+@dataclass(frozen=True)
+class DetectionResult(Generic[ResultT]):
+    """Synchronous MediaPipe result paired with its processing duration."""
 
-    def __init__(self, max_pending: int) -> None:
-        """Create a store that retains at most ``max_pending`` contexts."""
-        if max_pending < 1:
-            raise ValueError('max_pending must be at least one')
-        self._max_pending = int(max_pending)
-        self._contexts: dict[int, ContextT] = {}
-        self._lock = Lock()
+    result: ResultT
+    duration_sec: float
 
-    def put(self, timestamp_ms: int, context: ContextT) -> None:
-        """Store a context and evict the oldest pending entries if necessary."""
-        with self._lock:
-            self._contexts[int(timestamp_ms)] = context
-            while len(self._contexts) > self._max_pending:
-                oldest_timestamp = next(iter(self._contexts))
-                self._contexts.pop(oldest_timestamp, None)
 
-    def pop(self, timestamp_ms: int) -> ContextT | None:
-        """Atomically remove and return one completed context."""
-        with self._lock:
-            return self._contexts.pop(int(timestamp_ms), None)
+class HandLandmarkerRuntime:
+    """Own VIDEO-mode timestamp, timing, and landmarker lifecycle state."""
 
-    def discard(self, timestamp_ms: int) -> None:
-        """Remove a failed submission context when it is still pending."""
-        with self._lock:
-            self._contexts.pop(int(timestamp_ms), None)
+    def __init__(
+        self,
+        landmarker: Any,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        """Create runtime state around an injected MediaPipe landmarker."""
+        self._landmarker = landmarker
+        self._clock = clock
+        self._timestamps = MonotonicTimestampGenerator()
 
-    @property
-    def pending_count(self) -> int:
-        """Return the number of contexts currently awaiting results."""
-        with self._lock:
-            return len(self._contexts)
+    def detect(
+        self,
+        image: Any,
+        candidate_timestamp_ms: int,
+    ) -> DetectionResult[Any]:
+        """
+        Detect synchronously using a strictly increasing MediaPipe timestamp.
+
+        Detection errors propagate to the caller. Durations use a monotonic
+        clock and are clamped to zero if an injected clock moves backwards.
+        """
+        timestamp_ms = self._timestamps.next_timestamp(candidate_timestamp_ms)
+        started_at_sec = self._clock()
+        result = self._landmarker.detect_for_video(image, timestamp_ms)
+        return DetectionResult(
+            result=result,
+            duration_sec=max(self._clock() - started_at_sec, 0.0),
+        )
+
+    def close(self) -> None:
+        """Close the injected landmarker and release its native resources."""
+        self._landmarker.close()
+
+
+class PeriodicRateTracker:
+    """Report an event rate once per fixed monotonic-clock interval."""
+
+    def __init__(
+        self,
+        interval_sec: float = 1.0,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        """Create a tracker whose :meth:`tick` returns rates periodically."""
+        if interval_sec <= 0.0:
+            raise ValueError('interval_sec must be greater than zero')
+        self._interval_sec = float(interval_sec)
+        self._clock = clock
+        self._window_start_sec = self._clock()
+        self._event_count = 0
+
+    def tick(self) -> float | None:
+        """Record one event and return its window rate when due."""
+        self._event_count += 1
+        now_sec = self._clock()
+        elapsed_sec = now_sec - self._window_start_sec
+        if elapsed_sec < self._interval_sec:
+            return None
+
+        rate = self._event_count / elapsed_sec
+        self._window_start_sec = now_sec
+        self._event_count = 0
+        return rate
 
 
 def timestamp_ms_from_header(header: _Header) -> int:

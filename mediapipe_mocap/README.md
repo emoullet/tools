@@ -63,7 +63,6 @@ a parameter file.
 | `min_hand_detection_confidence` | double | 0.5 | Minimum confidence for hand detection |
 | `min_hand_presence_confidence` | double | 0.5 | Minimum confidence for hand presence |
 | `min_tracking_confidence` | double | 0.5 | Minimum tracking confidence |
-| `running_mode` | string | `VIDEO` | MediaPipe running mode: `VIDEO` (sync) or `LIVE_STREAM` (async callback) |
 | `delegate` | string | `AUTO` | Execution policy: `AUTO`, `CPU`, or `GPU`; `AUTO` prefers GPU on native Linux and retries CPU if GPU initialization fails |
 | `enable_one_euro_filter` | bool | false | Enable One Euro smoothing on each landmark coordinate |
 | `one_euro_frequency` | double | 30.0 | Expected landmark update frequency in Hz |
@@ -79,12 +78,11 @@ a parameter file.
 | `saturation_zone` | double | 0.3 | Display-only saturation boundary used by the viewer |
 | `tracked_landmark_index` | int | 0 | Landmark used for reference reset and control-zone feedback |
 
-The shipped `config/hand_landmarks_node.yaml` changes `running_mode` to
-`LIVE_STREAM`, enables One Euro filtering with `mincutoff=5.0` and
-`beta=100.0`, and enables visualization. The standalone
+The shipped `config/hand_landmarks_node.yaml` enables One Euro filtering with
+`mincutoff=5.0` and `beta=100.0`, and enables visualization. The standalone
 `hand_landmarks_launch.py` still loads that YAML but overrides
-`running_mode=VIDEO` and `visualize=false`. The USB-camera launch uses the YAML
-defaults and overrides `selfie_mode=true`.
+`visualize=false`. The USB-camera launch uses the YAML defaults and overrides
+`selfie_mode=true`.
 
 ## Usage
 
@@ -241,10 +239,8 @@ callers as `mediapipe_mocap.viewer.HandLandmarksViewer`.
 
 Parameters are loaded from `config/hand_landmarks_node.yaml`.
 
-**Running mode (`running_mode`):**
-
-- `VIDEO`: synchronous processing with `detect_for_video`, good default for deterministic frame-by-frame handling.
-- `LIVE_STREAM`: asynchronous processing with `detect_async` + callback, useful for stream-oriented pipelines.
+Both landmark producers use MediaPipe's synchronous `VIDEO` mode. Timestamps
+are made strictly increasing before each `detect_for_video` call.
 
 **Execution delegate (`delegate`):**
 
@@ -273,16 +269,7 @@ Override parameters at runtime:
 ros2 run mediapipe_mocap hand_landmarks_node \
   --ros-args \
   -p image_topic:=/my/custom/image/topic \
-  -p model_path:=/path/to/custom/model.task \
-  -p running_mode:=VIDEO
-```
-
-Run with asynchronous mode:
-
-```bash
-ros2 run mediapipe_mocap hand_landmarks_node \
-  --ros-args \
-  -p running_mode:=LIVE_STREAM
+  -p model_path:=/path/to/custom/model.task
 ```
 
 Enable built-in visualization directly in the node:
@@ -300,12 +287,6 @@ ros2 run mediapipe_mocap hand_landmarks_node \
 Starts only the hand landmarks detection node:
 ```bash
 ros2 launch mediapipe_mocap hand_landmarks_launch.py
-```
-
-Select running mode at launch time:
-
-```bash
-ros2 launch mediapipe_mocap hand_landmarks_launch.py running_mode:=LIVE_STREAM
 ```
 
 With built-in visualization enabled:

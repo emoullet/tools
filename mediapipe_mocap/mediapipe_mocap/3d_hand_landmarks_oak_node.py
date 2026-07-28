@@ -26,7 +26,6 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-from dataclasses import dataclass
 import datetime
 import os
 import threading
@@ -51,14 +50,11 @@ from mediapipe_mocap.landmark_processing import (
     relative_points,
 )
 from mediapipe_mocap.mediapipe_runtime import (
-    AsyncContextStore,
     create_hand_landmarker_with_delegate,
     HandLandmarkerConfig,
-    MonotonicTimestampGenerator,
-    OAK_ASYNC_CONTEXT_LIMIT,
+    HandLandmarkerRuntime,
     parse_delegate_mode,
-    parse_running_mode,
-    RuntimeMode,
+    PeriodicRateTracker,
     timestamp_sec_from_header,
 )
 from mediapipe_mocap.oak_depth import (
@@ -87,17 +83,6 @@ from mediapipe.tasks.python.vision import (  # noqa: E402,I100
     RunningMode,
 )
 import numpy as np  # noqa: E402,I100
-
-
-@dataclass(frozen=True)
-class OakAsyncContext:
-    """Frame data retained until a live-stream result arrives."""
-
-    header: Header
-    timestamp_sec: float
-    depth_mm: np.ndarray
-    visualization_frame: np.ndarray | None
-    detect_start_sec: float
 
 
 class HandLandmarksOakNode(Node):
@@ -133,7 +118,6 @@ class HandLandmarksOakNode(Node):
                 ('min_hand_detection_confidence', 0.5),
                 ('min_hand_presence_confidence', 0.5),
                 ('min_tracking_confidence', 0.5),
-                ('running_mode', 'LIVE_STREAM'),
                 ('delegate', 'AUTO'),
                 ('camera_frame_id', 'oak_rgb_camera_optical_frame'),
                 ('rgb_width', 640),
@@ -267,19 +251,13 @@ class HandLandmarksOakNode(Node):
                 ),
             )
 
-        self.running_mode = parse_running_mode(
-            self._get_str('running_mode'),
-            self.get_logger().warning,
-        )
-        running_mode_param = self.running_mode.value
         delegate_mode = parse_delegate_mode(
             self._get_str('delegate'),
             self.get_logger().warning,
         )
-        self.landmarker = create_hand_landmarker_with_delegate(
+        landmarker = create_hand_landmarker_with_delegate(
             HandLandmarkerConfig(
                 model_asset_path=self.model_path,
-                running_mode=self.running_mode,
                 num_hands=self.num_hands,
                 min_hand_detection_confidence=self._get_float(
                     'min_hand_detection_confidence'
@@ -292,11 +270,6 @@ class HandLandmarksOakNode(Node):
                 ),
             ),
             requested_delegate=delegate_mode,
-            result_callback=(
-                self._on_live_stream_result
-                if self.running_mode is RuntimeMode.LIVE_STREAM
-                else None
-            ),
             base_options_type=BaseOptions,
             delegate_type=BaseOptions.Delegate,
             landmarker_options_type=HandLandmarkerOptions,
@@ -305,6 +278,7 @@ class HandLandmarksOakNode(Node):
             info=self.get_logger().info,
             warn=self.get_logger().warning,
         )
+        self._runtime = HandLandmarkerRuntime(landmarker)
 
         self.landmarks_pub = self.create_publisher(PointCloud, self.landmarks_topic, 10)
         self.raw_landmarks_pub = None
@@ -326,12 +300,7 @@ class HandLandmarksOakNode(Node):
         self.sync_queue = None
         self.capture_thread = None
         self.running = False
-        self._timestamps = MonotonicTimestampGenerator()
-        self._async_contexts = AsyncContextStore[OakAsyncContext](
-            OAK_ASYNC_CONTEXT_LIMIT
-        )
-        self.last_debug_time = time.time()
-        self.frame_count = 0
+        self._debug_rate = PeriodicRateTracker()
 
         self._build_and_start_pipeline()
         self.running = True
@@ -343,7 +312,7 @@ class HandLandmarksOakNode(Node):
             f'  landmarks_topic  = {self.landmarks_topic}\n'
             f'  raw_topic        = {self.raw_landmarks_topic or "<disabled>"}\n'
             f'  model_path       = {self.model_path}\n'
-            f'  running_mode     = {running_mode_param}\n'
+            f'  running_mode     = VIDEO\n'
             f'  delegate         = {delegate_mode.value}\n'
             f'  rgb/fps          = {self.rgb_resolution[0]}x'
             f'{self.rgb_resolution[1]} @ {self.fps:.1f}\n'
@@ -589,80 +558,34 @@ class HandLandmarksOakNode(Node):
         header.stamp = self.get_clock().now().to_msg()
         header.frame_id = self.camera_frame_id
         ts_sec = timestamp_sec_from_header(header)
-        ts_ms = self._next_timestamp_ms(rgb_msg)
+        candidate_ts_ms = self._device_timestamp_ms(rgb_msg)
 
         cv_rgb = cv2.cvtColor(cv_bgr, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=cv_rgb)
 
-        if self.running_mode is RuntimeMode.LIVE_STREAM:
-            self._async_contexts.put(
-                ts_ms,
-                OakAsyncContext(
-                    header,
-                    ts_sec,
-                    np.array(depth_mm, copy=True),
-                    cv_bgr.copy() if self.visualize else None,
-                    time.time(),
-                ),
-            )
-            try:
-                self.landmarker.detect_async(mp_image, ts_ms)
-            except Exception as exc:
-                self._async_contexts.discard(ts_ms)
-                self.get_logger().error(f'Error in HandLandmarker.detect_async: {exc}')
-            return
-
-        start_time = time.time()
         try:
-            result = self.landmarker.detect_for_video(mp_image, ts_ms)
+            detection = self._runtime.detect(
+                mp_image,
+                candidate_ts_ms,
+            )
         except Exception as exc:
-            self.get_logger().error(f'Error in HandLandmarker.detect_for_video: {exc}')
+            self.get_logger().error(
+                f'Error in HandLandmarker.detect_for_video: {exc}'
+            )
             return
 
         self._handle_result(
-            result=result,
+            result=detection.result,
             header=header,
             ts_sec=ts_sec,
             depth_mm=depth_mm,
             cv_rgb_for_visualization=cv_bgr if self.visualize else None,
-            t_mediapipe=time.time() - start_time,
+            t_mediapipe=detection.duration_sec,
         )
 
-    def _on_live_stream_result(self, result, output_image, timestamp_ms: int):
+    def _device_timestamp_ms(self, rgb_msg) -> int:
         """
-        Handle asynchronous MediaPipe results for a queued OAK frame.
-
-        Parameters
-        ----------
-        result : mediapipe.tasks.python.vision.HandLandmarkerResult
-            MediaPipe detection result for the queued OAK frame.
-        output_image : mediapipe.Image | None
-            MediaPipe callback image. The OAK path keeps its own visualization
-            frame in the queued context, so this parameter is intentionally unused.
-        timestamp_ms : int
-            MediaPipe timestamp used to recover the queued ROS header, depth frame,
-            visualization frame, and detection start time.
-
-        """
-        context = self._async_contexts.pop(timestamp_ms)
-        if context is None:
-            return
-
-        self._handle_result(
-            result=result,
-            header=context.header,
-            ts_sec=context.timestamp_sec,
-            depth_mm=context.depth_mm,
-            cv_rgb_for_visualization=context.visualization_frame,
-            t_mediapipe=max(
-                time.time() - context.detect_start_sec,
-                0.0,
-            ),
-        )
-
-    def _next_timestamp_ms(self, rgb_msg) -> int:
-        """
-        Return a strictly increasing MediaPipe timestamp for an OAK frame.
+        Return the candidate MediaPipe timestamp for an OAK frame.
 
         Parameters
         ----------
@@ -673,8 +596,9 @@ class HandLandmarksOakNode(Node):
         Returns
         -------
         int
-            Strictly increasing timestamp in milliseconds for MediaPipe video and
-            live-stream APIs.
+            Device timestamp in milliseconds, or wall-clock milliseconds when
+            the device timestamp is unavailable. The shared runtime enforces
+            strict monotonicity before submitting the frame.
 
         """
         try:
@@ -683,7 +607,7 @@ class HandLandmarksOakNode(Node):
         except Exception:
             ts_ms = int(time.time() * 1000.0)
 
-        return self._timestamps.next_timestamp(ts_ms)
+        return ts_ms
 
     def reset_reference_callback(self, msg: Bool):
         """
@@ -814,14 +738,9 @@ class HandLandmarksOakNode(Node):
             )
 
         if self.get_logger().is_enabled_for(rclpy.logging.LoggingSeverity.DEBUG):
-            self.frame_count += 1
-            now = time.time()
-            elapsed = now - self.last_debug_time
-            if elapsed >= 1.0:
-                fps = self.frame_count / elapsed
+            fps = self._debug_rate.tick()
+            if fps is not None:
                 self.get_logger().debug(f'OAK 3D hand FPS = {fps:.2f}')
-                self.last_debug_time = now
-                self.frame_count = 0
 
     def _build_3d_hand_landmarks(self, hand_landmarks, depth_mm, ts_sec, hand_idx):
         """
@@ -980,7 +899,7 @@ class HandLandmarksOakNode(Node):
         if self.capture_thread is not None and self.capture_thread.is_alive():
             self.capture_thread.join(timeout=1.0)
         try:
-            self.landmarker.close()
+            self._runtime.close()
         except Exception:
             pass
         if self.viewer is not None:

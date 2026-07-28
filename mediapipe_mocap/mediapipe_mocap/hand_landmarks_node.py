@@ -26,9 +26,7 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-from dataclasses import dataclass
 import os
-import time
 
 from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
@@ -44,14 +42,11 @@ from mediapipe_mocap.landmark_processing import (
     relative_points,
 )
 from mediapipe_mocap.mediapipe_runtime import (
-    AsyncContextStore,
     create_hand_landmarker_with_delegate,
     HandLandmarkerConfig,
-    IMAGE_ASYNC_CONTEXT_LIMIT,
-    MonotonicTimestampGenerator,
+    HandLandmarkerRuntime,
     parse_delegate_mode,
-    parse_running_mode,
-    RuntimeMode,
+    PeriodicRateTracker,
     timestamp_ms_from_header,
     timestamp_sec_from_header,
 )
@@ -65,7 +60,7 @@ from mediapipe_mocap.viewer import HandLandmarksViewer
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, PointCloud
-from std_msgs.msg import Bool, Header
+from std_msgs.msg import Bool
 
 
 prepare_runtime_imports()
@@ -78,15 +73,6 @@ from mediapipe.tasks.python.vision import (  # noqa: E402,I100
     HandLandmarkerOptions,
     RunningMode,
 )
-import numpy as np  # noqa: E402,I100
-
-
-@dataclass(frozen=True)
-class ImageAsyncContext:
-    """ROS context retained until a live-stream result arrives."""
-
-    header: Header
-    detect_start_sec: float
 
 
 class HandLandmarksNode(Node):
@@ -124,7 +110,6 @@ class HandLandmarksNode(Node):
                 ('min_hand_detection_confidence', 0.5),
                 ('min_hand_presence_confidence', 0.5),
                 ('min_tracking_confidence', 0.5),
-                ('running_mode', 'VIDEO'),
                 ('delegate', 'AUTO'),
                 ('selfie_mode', False),
                 ('enable_one_euro_filter', False),
@@ -160,11 +145,6 @@ class HandLandmarksNode(Node):
         min_track_conf = float(
             self.get_parameter('min_tracking_confidence').get_parameter_value().double_value
         )
-        self.running_mode = parse_running_mode(
-            self.get_parameter('running_mode').get_parameter_value().string_value,
-            self.get_logger().warning,
-        )
-        running_mode_param = self.running_mode.value
         delegate_mode = parse_delegate_mode(
             self.get_parameter('delegate').get_parameter_value().string_value,
             self.get_logger().warning,
@@ -270,25 +250,15 @@ class HandLandmarksNode(Node):
         # (width / min(width, height), height / min(width, height)).
         self.frame_normalization_factor = None
 
-        self._timestamps = MonotonicTimestampGenerator()
-        self._async_contexts = AsyncContextStore[ImageAsyncContext](
-            IMAGE_ASYNC_CONTEXT_LIMIT
-        )
-        self.landmarker = create_hand_landmarker_with_delegate(
+        landmarker = create_hand_landmarker_with_delegate(
             HandLandmarkerConfig(
                 model_asset_path=model_path,
-                running_mode=self.running_mode,
                 num_hands=num_hands,
                 min_hand_detection_confidence=min_det_conf,
                 min_hand_presence_confidence=min_presence_conf,
                 min_tracking_confidence=min_track_conf,
             ),
             requested_delegate=delegate_mode,
-            result_callback=(
-                self._on_live_stream_result
-                if self.running_mode is RuntimeMode.LIVE_STREAM
-                else None
-            ),
             base_options_type=BaseOptions,
             delegate_type=BaseOptions.Delegate,
             landmarker_options_type=HandLandmarkerOptions,
@@ -297,6 +267,7 @@ class HandLandmarksNode(Node):
             info=self.get_logger().info,
             warn=self.get_logger().warning,
         )
+        self._runtime = HandLandmarkerRuntime(landmarker)
 
         initial_reference = self.reference_state.snapshot().position
         self.get_logger().info(
@@ -304,7 +275,7 @@ class HandLandmarksNode(Node):
             f'  image_topic      = {image_topic}\n'
             f'  landmarks_topic  = {landmarks_topic}\n'
             f'  model_path       = {model_path}\n'
-            f'  running_mode     = {running_mode_param}\n'
+            f'  running_mode     = VIDEO\n'
             f'  delegate         = {delegate_mode.value}\n'
             f'  selfie_mode      = {self.selfie_mode}\n'
             f'  prime_offload    = '
@@ -329,8 +300,7 @@ class HandLandmarksNode(Node):
                 f'beta={one_euro_beta:.3f}'
             )
 
-        self.last_debug_time = time.time()
-        self.frame_count = 0
+        self._debug_rate = PeriodicRateTracker()
 
     # -------------------------------------------------------------
     # Image callback: convert ROS image → MediaPipe Image → detect
@@ -371,82 +341,24 @@ class HandLandmarksNode(Node):
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=cv_rgb)
 
         # Use ROS time and enforce strictly increasing timestamps for MediaPipe.
-        ts_ms = self._timestamps.next_timestamp(
-            timestamp_ms_from_header(msg.header)
-        )
         ts_sec = timestamp_sec_from_header(msg.header)
-        if self.running_mode is RuntimeMode.LIVE_STREAM:
-            self._async_contexts.put(
-                ts_ms,
-                ImageAsyncContext(
-                    header=msg.header,
-                    detect_start_sec=time.time(),
-                ),
-            )
-            try:
-                self.landmarker.detect_async(mp_image, ts_ms)
-            except Exception as e:
-                self._async_contexts.discard(ts_ms)
-                self.get_logger().error(f'Error in HandLandmarker.detect_async: {e}')
-            return
-
-        now = time.time()
         try:
-            result = self.landmarker.detect_for_video(mp_image, ts_ms)
+            detection = self._runtime.detect(
+                mp_image,
+                timestamp_ms_from_header(msg.header),
+            )
         except Exception as e:
             self.get_logger().error(f'Error in HandLandmarker.detect_for_video: {e}')
             return
-        t_mediapipe = time.time() - now
 
         self._handle_result(
-            result=result,
+            result=detection.result,
             header=msg.header,
             ts_sec=ts_sec,
             cv_bgr_for_visualization=(
                 cv2.cvtColor(cv_rgb, cv2.COLOR_RGB2BGR) if self.visualize else None
             ),
-            t_mediapipe=t_mediapipe,
-        )
-
-    def _on_live_stream_result(self, result, output_image, timestamp_ms: int):
-        """
-        Handle asynchronous MediaPipe results and restore ROS context.
-
-        Parameters
-        ----------
-        result : mediapipe.tasks.python.vision.HandLandmarkerResult
-            MediaPipe detection result for the image associated with
-            ``timestamp_ms``.
-        output_image : mediapipe.Image | None
-            Optional image returned by MediaPipe in live-stream mode. When
-            visualization is enabled, it is copied and converted for OpenCV
-            drawing.
-        timestamp_ms : int
-            MediaPipe timestamp key used to recover the stored ROS header and
-            detection start time.
-
-        """
-        context = self._async_contexts.pop(timestamp_ms)
-        if context is None:
-            return
-
-        ts_sec = timestamp_sec_from_header(context.header)
-        t_mediapipe = max(time.time() - context.detect_start_sec, 0.0)
-
-        cv_bgr = None
-        if self.visualize and output_image is not None:
-            try:
-                cv_rgb = np.array(output_image.numpy_view(), copy=True)
-                cv_bgr = cv2.cvtColor(cv_rgb, cv2.COLOR_RGB2BGR)
-            except Exception:
-                cv_bgr = None
-
-        self._handle_result(
-            result=result,
-            header=context.header,
-            ts_sec=ts_sec,
-            cv_bgr_for_visualization=cv_bgr,
-            t_mediapipe=t_mediapipe,
+            t_mediapipe=detection.duration_sec,
         )
 
     def reset_reference_callback(self, msg: Bool):
@@ -595,20 +507,15 @@ class HandLandmarksNode(Node):
 
         # --- FPS MEASUREMENT (debug mode only) ---
         if self.get_logger().is_enabled_for(rclpy.logging.LoggingSeverity.DEBUG):
-            self.frame_count += 1
-            now = time.time()
-            elapsed = now - self.last_debug_time
-            if elapsed >= 1.0:  # every 1 second
-                fps = self.frame_count / elapsed
+            fps = self._debug_rate.tick()
+            if fps is not None:
                 self.get_logger().debug(f'Mediapipe FPS = {fps:.2f}')
-                self.last_debug_time = now
-                self.frame_count = 0
 
     def destroy_node(self):
         """Close MediaPipe and OpenCV resources before node shutdown."""
         # Cleanly close MediaPipe resources
         try:
-            self.landmarker.close()
+            self._runtime.close()
         except Exception:
             pass
         if self.viewer is not None:
