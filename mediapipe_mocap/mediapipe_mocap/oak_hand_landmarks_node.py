@@ -85,7 +85,7 @@ from mediapipe.tasks.python.vision import (  # noqa: E402,I100
 import numpy as np  # noqa: E402,I100
 
 
-class HandLandmarksOakNode(Node):
+class OakHandLandmarksNode(Node):
     """
     Capture OAK-D S2 RGBD frames and publish 3D hand-control inputs.
 
@@ -99,7 +99,7 @@ class HandLandmarksOakNode(Node):
 
     def __init__(self):
         """Initialize parameters, DepthAI capture, MediaPipe, and ROS interfaces."""
-        super().__init__('hand_landmarks_oak_3d_node')
+        super().__init__('oak_hand_landmarks_node')
 
         package_share_dir = get_package_share_directory('mediapipe_mocap')
         default_model_path = os.path.join(package_share_dir, 'models', 'hand_landmarker.task')
@@ -308,7 +308,7 @@ class HandLandmarksOakNode(Node):
         self.capture_thread.start()
 
         self.get_logger().info(
-            f'HandLandmarksOakNode started.\n'
+            f'OakHandLandmarksNode started.\n'
             f'  landmarks_topic  = {self.landmarks_topic}\n'
             f'  raw_topic        = {self.raw_landmarks_topic or "<disabled>"}\n'
             f'  model_path       = {self.model_path}\n'
@@ -920,7 +920,7 @@ def main(args=None):
 
     """
     rclpy.init(args=args)
-    node = HandLandmarksOakNode()
+    node = OakHandLandmarksNode()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

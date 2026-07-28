@@ -42,7 +42,7 @@ def generate_launch_description():
     oak_hand_landmarks_config = os.path.join(
         package_share_dir,
         'config',
-        '3d_hand_landmarks_oak_node.yaml',
+        'oak_hand_landmarks_node.yaml',
     )
 
     fps_arg = DeclareLaunchArgument(
@@ -66,7 +66,7 @@ def generate_launch_description():
     visualize_arg = DeclareLaunchArgument(
         'visualize',
         default_value='true',
-        description='Show local OpenCV visualization window in 3d_hand_landmarks_oak_node',
+        description='Show local OpenCV visualization window in oak_hand_landmarks_node',
     )
 
     window_name_arg = DeclareLaunchArgument(
@@ -113,8 +113,8 @@ def generate_launch_description():
 
     oak_hand_landmarks_node = Node(
         package='mediapipe_mocap',
-        executable='3d_hand_landmarks_oak_node',
-        name='hand_landmarks_oak_3d_node',
+        executable='oak_hand_landmarks_node',
+        name='oak_hand_landmarks_node',
         output='screen',
         parameters=[
             LaunchConfiguration('oak_config_file'),

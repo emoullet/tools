@@ -23,7 +23,7 @@ setup(
         ('share/' + package_name + '/config', [
             'config/hand_landmarks_node.yaml',
             'config/usb_cam.yaml',
-            'config/3d_hand_landmarks_oak_node.yaml',
+            'config/oak_hand_landmarks_node.yaml',
         ]),
         ('share/' + package_name + '/models', ['models/hand_landmarker.task']),
     ],
@@ -37,7 +37,7 @@ setup(
     entry_points={
         'console_scripts': [
             'hand_landmarks_node = mediapipe_mocap.hand_landmarks_node:main',
-            '3d_hand_landmarks_oak_node = mediapipe_mocap.3d_hand_landmarks_oak_node:main',
+            'oak_hand_landmarks_node = mediapipe_mocap.oak_hand_landmarks_node:main',
         ],
     },
 )

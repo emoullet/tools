@@ -9,7 +9,7 @@ This package provides two hand tracking workflows:
 
 - `hand_landmarks_node` subscribes to RGB images, runs MediaPipe
   HandLandmarker, and publishes 2D reference-relative hand-control points.
-- `3d_hand_landmarks_oak_node` captures OAK-D S2 RGB and stereo depth
+- `oak_hand_landmarks_node` captures OAK-D S2 RGB and stereo depth
   directly with DepthAI v3, back-projects MediaPipe landmarks to metric 3D,
   and publishes either normalized control points or metric relative points.
 
@@ -185,9 +185,9 @@ ros2 launch mediapipe_mocap oak_hand_landmarks_launch.py
 Or run the executable directly with the OAK config:
 
 ```bash
-ros2 run mediapipe_mocap 3d_hand_landmarks_oak_node \
+ros2 run mediapipe_mocap oak_hand_landmarks_node \
   --ros-args \
-  --params-file $(ros2 pkg prefix mediapipe_mocap)/share/mediapipe_mocap/config/3d_hand_landmarks_oak_node.yaml
+  --params-file $(ros2 pkg prefix mediapipe_mocap)/share/mediapipe_mocap/config/oak_hand_landmarks_node.yaml
 ```
 
 For the complete OAK hand joystick pipeline, launch it from `hand_joystick_interfaces`:

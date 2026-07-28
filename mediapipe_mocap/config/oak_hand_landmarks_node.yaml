@@ -1,4 +1,4 @@
-hand_landmarks_oak_3d_node:
+oak_hand_landmarks_node:
   ros__parameters:
     landmarks_topic: "/hand_landmarks"
     raw_landmarks_topic: ""
