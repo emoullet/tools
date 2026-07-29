@@ -45,7 +45,6 @@ from mediapipe_mocap.hand_landmarks_common import (  # noqa: I100
 )
 from mediapipe_mocap.landmark_processing import (
     LandmarkFilterBank,
-    normalized_control_points,
     OneEuroFilterConfig,
     relative_points,
 )
@@ -86,14 +85,11 @@ import numpy as np  # noqa: E402,I100
 
 class OakHandLandmarksNode(Node):
     """
-    Capture OAK-D S2 RGBD frames and publish 3D hand-control inputs.
+    Capture OAK-D S2 RGBD frames and publish 3D hand landmarks.
 
     Output semantics for the first detected hand:
       - 21 points in MediaPipe order
-      - default point.x/y/z are reference-relative, saturated normalized inputs
-        in [-1, 1]
-      - set publish_normalized_landmarks=false to publish reference-relative
-        metric camera coordinates in meters
+      - point.x/y/z are reference-relative RGB-camera coordinates in meters
     """
 
     def __init__(self):
@@ -111,7 +107,6 @@ class OakHandLandmarksNode(Node):
             namespace='',
             parameters=[
                 ('landmarks_topic', '/hand_landmarks'),
-                ('raw_landmarks_topic', ''),
                 ('model_path', default_model_path),
                 ('num_hands', 1),
                 ('min_hand_detection_confidence', 0.5),
@@ -139,8 +134,6 @@ class OakHandLandmarksNode(Node):
                 ('depth_percentile', 50.0),
                 ('missing_depth_strategy', 'reuse_last'),
                 ('max_missing_depth_landmarks', 8),
-                ('publish_normalized_landmarks', True),
-                ('normalization_mode', 'axis'),
                 ('saturation_zone', 0.4),
                 ('dead_zone', 0.05),
                 ('tracked_landmark_index', 0),
@@ -159,7 +152,6 @@ class OakHandLandmarksNode(Node):
         )
 
         self.landmarks_topic = self._get_str('landmarks_topic')
-        self.raw_landmarks_topic = self._get_str('raw_landmarks_topic')
         self.model_path = self._get_str('model_path') or default_model_path
         self.num_hands = max(1, self._get_int('num_hands'))
         self.camera_frame_id = self._get_str('camera_frame_id')
@@ -192,13 +184,6 @@ class OakHandLandmarksNode(Node):
                 self._get_int('max_missing_depth_landmarks'),
             ),
         )
-        self.publish_normalized_landmarks = self._get_bool('publish_normalized_landmarks')
-        self.normalization_mode = self._get_str('normalization_mode').lower()
-        if self.normalization_mode not in ('axis', 'vector'):
-            self.get_logger().warning(
-                f"Invalid normalization_mode '{self.normalization_mode}', falling back to 'axis'."
-            )
-            self.normalization_mode = 'axis'
         self.saturation_zone = max(1e-6, self._get_float('saturation_zone'))
         self.dead_zone = max(0.0, self._get_float('dead_zone'))
         self.tracked_landmark_index = self._get_int('tracked_landmark_index')
@@ -283,13 +268,6 @@ class OakHandLandmarksNode(Node):
         self._runtime = HandLandmarkerRuntime(landmarker)
 
         self.landmarks_pub = self.create_publisher(PointCloud, self.landmarks_topic, 10)
-        self.raw_landmarks_pub = None
-        if self.raw_landmarks_topic:
-            self.raw_landmarks_pub = self.create_publisher(
-                PointCloud,
-                self.raw_landmarks_topic,
-                10,
-            )
         self.reset_reference_sub = self.create_subscription(
             Bool,
             self.reset_reference_topic,
@@ -312,14 +290,12 @@ class OakHandLandmarksNode(Node):
         self.get_logger().info(
             f'OakHandLandmarksNode started.\n'
             f'  landmarks_topic  = {self.landmarks_topic}\n'
-            f'  raw_topic        = {self.raw_landmarks_topic or "<disabled>"}\n'
             f'  model_path       = {self.model_path}\n'
             f'  running_mode     = VIDEO\n'
             f'  delegate         = {delegate_mode.value}\n'
             f'  rgb/fps          = {self.rgb_resolution[0]}x'
             f'{self.rgb_resolution[1]} @ {self.fps:.1f}\n'
-            f'  normalized       = {self.publish_normalized_landmarks} '
-            f'({self.normalization_mode}, sat={self.saturation_zone:.3f})\n'
+            f'  output           = reference-relative metric camera coordinates\n'
             f'  depth_range      = [{self.depth_config.min_depth_m:.2f}, '
             f'{self.depth_config.max_depth_m:.2f}] m '
             f'radius={self.depth_config.sample_radius_px}px\n'
@@ -654,7 +630,7 @@ class OakHandLandmarksNode(Node):
         t_mediapipe,
     ):
         """
-        Build, normalize, publish, and optionally visualize a detection result.
+        Build, publish, and optionally visualize a detection result.
 
         Parameters
         ----------
@@ -712,24 +688,10 @@ class OakHandLandmarksNode(Node):
                     reference,
                     (1.0, 1.0, 1.0),
                 )
-                if self.raw_landmarks_pub is not None:
-                    raw_cloud = PointCloud()
-                    raw_cloud.header = header
-                    raw_cloud.points = relative_landmarks
-                    self.raw_landmarks_pub.publish(raw_cloud)
-
-                if self.publish_normalized_landmarks:
-                    published_points = normalized_control_points(
-                        relative_landmarks,
-                        self.saturation_zone,
-                        self.normalization_mode,
-                    )
-                else:
-                    published_points = relative_landmarks
 
                 cloud = PointCloud()
                 cloud.header = header
-                cloud.points = published_points
+                cloud.points = relative_landmarks
                 self.landmarks_pub.publish(cloud)
         else:
             if self.landmark_filters is not None:
@@ -894,7 +856,6 @@ class OakHandLandmarksNode(Node):
             show_control_zones=self.show_control_zones,
             dead_zone=self.dead_zone,
             saturation_zone=self.saturation_zone,
-            normalization_mode=self.normalization_mode,
             focal_length_px=self.depth_projector.intrinsics.fx,
         )
         if exit_requested:

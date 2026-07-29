@@ -11,7 +11,7 @@ This package provides two hand tracking workflows:
   HandLandmarker, and publishes 2D reference-relative hand-control points.
 - `oak_hand_landmarks_node` captures OAK-D S2 RGB and stereo depth
   directly with DepthAI v3, back-projects MediaPipe landmarks to metric 3D,
-  and publishes either normalized control points or metric relative points.
+  and publishes reference-relative metric points.
 
 ## Features
 
@@ -28,12 +28,8 @@ This package provides two hand tracking workflows:
   - 2D node: 21 reference-relative points. `point.x` and `point.y` are
     aspect-corrected normalized image offsets, and `point.z` is `0`. The
     producer does not apply dead-zone removal or saturation.
-  - OAK node: 21 saturated normalized control points in `[-1, 1]` by default.
-    Set `publish_normalized_landmarks=false` to publish reference-relative
-    metric coordinates in meters. Normalization applies saturation but does
-    not apply the configured display dead zone.
-- Optional OAK raw topic from `raw_landmarks_topic` (`sensor_msgs/PointCloud`)
-  - Reference-relative metric coordinates before normalization.
+  - OAK node: 21 reference-relative RGB-camera points in meters. The producer
+    does not apply dead-zone removal or saturation.
 
 Landmark publishers and reset subscriptions use ROS queue depth 10 with the
 default reliable/volatile QoS policies.
@@ -202,8 +198,6 @@ ros2 launch mediapipe_mocap oak_hand_landmarks_launch.py \
   rgb_width:=640 \
   rgb_height:=400 \
   visualize:=true \
-  publish_normalized_landmarks:=false \
-  raw_landmarks_topic:=/hand_landmarks_raw \
   saturation_zone:=0.4 \
   landmark_index:=0
 ```
@@ -218,9 +212,7 @@ Key OAK parameters:
 | `delegate` | `AUTO` | MediaPipe execution policy; `AUTO` provides GPU-to-CPU fallback on native Linux |
 | `stereo_preset` | `FAST_DENSITY` | DepthAI StereoDepth preset |
 | `depth_sample_radius_px` | `2` | Median/percentile depth sampling window radius around each landmark |
-| `publish_normalized_landmarks` | `true` | Publish saturated normalized inputs instead of metric relative coordinates |
-| `saturation_zone` | `0.4` | Metric displacement that maps to `+/-1` |
-| `normalization_mode` | `axis` | `axis` clips each component with `saturation_zone`; `vector` clips by vector norm |
+| `saturation_zone` | `0.4` | Display-only metric saturation boundary used by the viewer |
 | `dead_zone` | `0.05` | Display-only radius; it does not modify published points |
 | `auto_reference_on_first_detection` | `true` | Use the first valid tracked landmark as the 3D reference |
 | `reset_reference_topic` | `/reset_reference` | Reset topic shared by both producers |
@@ -315,10 +307,8 @@ ros2 launch mediapipe_mocap oak_hand_landmarks_launch.py
 | `rgb_height` | 400 | OAK RGB/depth output height in pixels |
 | `visualize` | false | Show local OpenCV visualization window |
 | `window_name` | `3D Hand Landmarks OAK` | Window title when `visualize` is enabled |
-| `publish_normalized_landmarks` | true | Publish normalized control landmarks instead of metric 3D landmarks |
-| `raw_landmarks_topic` | empty | Optional topic for metric camera-frame landmarks before normalization |
 | `dead_zone` | 0.05 | Display-only dead-zone radius used by the OAK feedback overlay |
-| `saturation_zone` | 0.4 | XYZ saturation distance used by normalization and the feedback overlay |
+| `saturation_zone` | 0.4 | Display-only XYZ saturation distance used by the feedback overlay |
 | `landmark_index` | 0 | Tracked landmark index (0-20) for OAK feedback overlay |
 | `reset_reference_topic` | `/reset_reference` | Reset topic loaded from the shipped OAK YAML |
 

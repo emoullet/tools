@@ -108,7 +108,6 @@ class HandLandmarksViewer:
         show_control_zones=True,
         dead_zone=0.0,
         saturation_zone=0.3,
-        normalization_mode='axis',
         focal_length_px=None,
     ):
         """
@@ -134,7 +133,6 @@ class HandLandmarksViewer:
             show_control_zones,
             dead_zone,
             saturation_zone,
-            normalization_mode,
             focal_length_px,
         )
         return self._show(annotated)
@@ -315,7 +313,6 @@ class HandLandmarksViewer:
         show_control_zones,
         dead_zone,
         saturation_zone,
-        normalization_mode,
         focal_length_px,
     ):
         """Draw metric reference and control-zone feedback."""
@@ -356,7 +353,7 @@ class HandLandmarksViewer:
         )
         cv2.putText(
             image,
-            f'SAT m: {saturation_zone:.2f} ({normalization_mode})',
+            f'SAT m: {saturation_zone:.2f}',
             (10, 145),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.7,

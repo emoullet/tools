@@ -81,18 +81,6 @@ def generate_launch_description():
         description='Path to OAK 3D hand landmarks config file',
     )
 
-    publish_normalized_landmarks_arg = DeclareLaunchArgument(
-        'publish_normalized_landmarks',
-        default_value='true',
-        description='Publish normalized control landmarks instead of metric 3D landmarks',
-    )
-
-    raw_landmarks_topic_arg = DeclareLaunchArgument(
-        'raw_landmarks_topic',
-        default_value='',
-        description='Optional topic for metric camera-frame landmarks before normalization',
-    )
-
     dead_zone_arg = DeclareLaunchArgument(
         'dead_zone',
         default_value='0.05',
@@ -102,7 +90,7 @@ def generate_launch_description():
     saturation_zone_arg = DeclareLaunchArgument(
         'saturation_zone',
         default_value='0.4',
-        description='XYZ saturation distance used by normalization and feedback overlay',
+        description='Display-only XYZ saturation distance for the feedback overlay',
     )
 
     landmark_index_arg = DeclareLaunchArgument(
@@ -133,11 +121,6 @@ def generate_launch_description():
                     value_type=bool,
                 ),
                 'window_name': LaunchConfiguration('window_name'),
-                'publish_normalized_landmarks': ParameterValue(
-                    LaunchConfiguration('publish_normalized_landmarks'),
-                    value_type=bool,
-                ),
-                'raw_landmarks_topic': LaunchConfiguration('raw_landmarks_topic'),
                 'dead_zone': ParameterValue(
                     LaunchConfiguration('dead_zone'),
                     value_type=float,
@@ -161,8 +144,6 @@ def generate_launch_description():
         visualize_arg,
         window_name_arg,
         oak_config_file_arg,
-        publish_normalized_landmarks_arg,
-        raw_landmarks_topic_arg,
         dead_zone_arg,
         saturation_zone_arg,
         landmark_index_arg,

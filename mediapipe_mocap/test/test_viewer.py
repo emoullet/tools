@@ -127,7 +127,6 @@ def test_show_3d_draws_metric_status_and_projected_zone(monkeypatch):
         tracked_landmark_index=0,
         dead_zone=0.05,
         saturation_zone=0.4,
-        normalization_mode='axis',
         focal_length_px=100.0,
     )
 

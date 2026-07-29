@@ -38,7 +38,6 @@ external synchronization.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
 from typing import Sequence
 
 from geometry_msgs.msg import Point32
@@ -49,8 +48,6 @@ LANDMARK_COUNT = 21
 """Number of landmarks in one MediaPipe hand result."""
 
 _AXIS_COUNT = 3
-_MIN_SATURATION = 1e-9
-_ZERO_NORM_TOLERANCE = 1e-12
 
 
 @dataclass(frozen=True)
@@ -129,36 +126,6 @@ class LandmarkFilterBank:
                 filter_instance.reset()
 
 
-def _clamp(value: float, lower: float, upper: float) -> float:
-    """Clamp ``value`` to the inclusive interval."""
-    return max(lower, min(upper, value))
-
-
-def saturate_axis(value: float, saturation: float) -> float:
-    """Scale one axis by ``saturation`` and clamp it into ``[-1, 1]``."""
-    safe_saturation = max(float(saturation), _MIN_SATURATION)
-    return _clamp(float(value) / safe_saturation, -1.0, 1.0)
-
-
-def saturate_vector_norm(point: Point32, saturation: float) -> Point32:
-    """Scale a point and limit its Euclidean norm to one."""
-    safe_saturation = max(float(saturation), _MIN_SATURATION)
-    norm = math.sqrt(
-        float(point.x) * float(point.x)
-        + float(point.y) * float(point.y)
-        + float(point.z) * float(point.z)
-    )
-    if norm <= _ZERO_NORM_TOLERANCE:
-        return Point32(x=0.0, y=0.0, z=0.0)
-
-    scale = min(norm / safe_saturation, 1.0) / norm
-    return Point32(
-        x=float(point.x) * scale,
-        y=float(point.y) * scale,
-        z=float(point.z) * scale,
-    )
-
-
 def relative_points(
     hand_landmarks: Sequence[Point32],
     reference_xyz: Sequence[float],
@@ -174,23 +141,4 @@ def relative_points(
             z=(float(landmark.z) - ref_z) * scale_z,
         )
         for landmark in hand_landmarks
-    ]
-
-
-def normalized_control_points(
-    points: Sequence[Point32],
-    saturation_zone: float,
-    mode: str = 'axis',
-) -> list[Point32]:
-    """Map relative points to axis-clamped or norm-clamped control space."""
-    if str(mode).lower() == 'vector':
-        return [saturate_vector_norm(point, saturation_zone) for point in points]
-
-    return [
-        Point32(
-            x=saturate_axis(point.x, saturation_zone),
-            y=saturate_axis(point.y, saturation_zone),
-            z=saturate_axis(point.z, saturation_zone),
-        )
-        for point in points
     ]

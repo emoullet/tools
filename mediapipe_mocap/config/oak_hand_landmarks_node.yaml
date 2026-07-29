@@ -1,7 +1,6 @@
 oak_hand_landmarks_node:
   ros__parameters:
     landmarks_topic: "/hand_landmarks"
-    raw_landmarks_topic: ""
     model_path: ""
     num_hands: 1
     min_hand_detection_confidence: 0.5
@@ -32,8 +31,6 @@ oak_hand_landmarks_node:
     missing_depth_strategy: "reuse_last"  # Options: skip_frame, reuse_last, hand_median
     max_missing_depth_landmarks: 8
 
-    publish_normalized_landmarks: true
-    normalization_mode: "axis"  # Options: axis, vector
     saturation_zone: 0.4
     dead_zone: 0.05
     tracked_landmark_index: 0
