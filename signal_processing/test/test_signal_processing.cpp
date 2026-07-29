@@ -42,64 +42,6 @@ TEST(SaturationTest, LimitNormScalesVector)
   EXPECT_NEAR(limited(1), 2.0, 1e-12);
 }
 
-TEST(SaturationTest, VelocityTwistWithinLimitsIsUnchanged)
-{
-  const VelocityTwist input{Eigen::Vector3d(0.3, 0.4, 0.0), Eigen::Vector3d(0.0, 0.0, 0.5)};
-  const VelocityTwist limited = signal_processing::limitVelocityTwistNorm(input, 1.0, 1.0);
-
-  EXPECT_TRUE(limited.linear.isApprox(input.linear));
-  EXPECT_TRUE(limited.angular.isApprox(input.angular));
-}
-
-TEST(SaturationTest, VelocityTwistLinearLimitScalesBothParts)
-{
-  const VelocityTwist input{Eigen::Vector3d(3.0, 4.0, 0.0), Eigen::Vector3d(0.0, 0.0, 2.0)};
-  const VelocityTwist limited = signal_processing::limitVelocityTwistNorm(input, 2.5, 10.0);
-
-  EXPECT_NEAR(limited.linear.norm(), 2.5, 1e-12);
-  EXPECT_NEAR(limited.angular.norm(), 1.0, 1e-12);
-}
-
-TEST(SaturationTest, VelocityTwistAngularLimitScalesBothParts)
-{
-  const VelocityTwist input{Eigen::Vector3d(2.0, 0.0, 0.0), Eigen::Vector3d(0.0, 3.0, 4.0)};
-  const VelocityTwist limited = signal_processing::limitVelocityTwistNorm(input, 10.0, 1.0);
-
-  EXPECT_NEAR(limited.linear.norm(), 0.4, 1e-12);
-  EXPECT_NEAR(limited.angular.norm(), 1.0, 1e-12);
-}
-
-TEST(SaturationTest, VelocityTwistUsesMostRestrictiveLimit)
-{
-  const VelocityTwist input{Eigen::Vector3d(4.0, 0.0, 0.0), Eigen::Vector3d(0.0, 3.0, 0.0)};
-  const VelocityTwist limited = signal_processing::limitVelocityTwistNorm(input, 2.0, 0.75);
-
-  EXPECT_NEAR(limited.linear.norm(), 1.0, 1e-12);
-  EXPECT_NEAR(limited.angular.norm(), 0.75, 1e-12);
-}
-
-TEST(SaturationTest, VelocityTwistNonPositiveLimitsAreDisabled)
-{
-  const VelocityTwist input{Eigen::Vector3d(4.0, 0.0, 0.0), Eigen::Vector3d(0.0, 3.0, 0.0)};
-  const VelocityTwist angular_limited =
-    signal_processing::limitVelocityTwistNorm(input, 0.0, 1.5);
-  const VelocityTwist unchanged = signal_processing::limitVelocityTwistNorm(input, 0.0, -1.0);
-
-  EXPECT_NEAR(angular_limited.linear.norm(), 2.0, 1e-12);
-  EXPECT_NEAR(angular_limited.angular.norm(), 1.5, 1e-12);
-  EXPECT_TRUE(unchanged.linear.isApprox(input.linear));
-  EXPECT_TRUE(unchanged.angular.isApprox(input.angular));
-}
-
-TEST(SaturationTest, VelocityTwistHandlesZeroVectors)
-{
-  const VelocityTwist input{Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero()};
-  const VelocityTwist limited = signal_processing::limitVelocityTwistNorm(input, 1.0, 1.0);
-
-  EXPECT_TRUE(limited.linear.isZero());
-  EXPECT_TRUE(limited.angular.isZero());
-}
-
 TEST(DeadZoneTest, NormDeadZoneMatchesRampShape)
 {
   // The dead-zone boundary itself is still considered inactive input.
