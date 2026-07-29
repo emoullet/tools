@@ -39,6 +39,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import Enum
+import math
 from typing import Protocol
 
 from geometry_msgs.msg import Point32
@@ -283,3 +284,80 @@ def back_project(
         y=(float(v) - intrinsics.cy) * float(depth_m) / intrinsics.fy,
         z=float(depth_m),
     )
+
+
+def project_to_normalized_image(
+    point: Point32,
+    intrinsics: CameraIntrinsics,
+    image_width: int,
+    image_height: int,
+) -> Point32 | None:
+    """Project a metric camera point into normalized RGB image coordinates."""
+    width = int(image_width)
+    height = int(image_height)
+    depth_m = float(point.z)
+    values = (
+        float(point.x),
+        float(point.y),
+        depth_m,
+        intrinsics.fx,
+        intrinsics.fy,
+        intrinsics.cx,
+        intrinsics.cy,
+    )
+    if (
+        width < 2
+        or height < 2
+        or depth_m <= 1e-9
+        or intrinsics.fx <= 0.0
+        or intrinsics.fy <= 0.0
+        or not all(math.isfinite(value) for value in values)
+    ):
+        return None
+
+    u = intrinsics.fx * float(point.x) / depth_m + intrinsics.cx
+    v = intrinsics.fy * float(point.y) / depth_m + intrinsics.cy
+    if not math.isfinite(u) or not math.isfinite(v):
+        return None
+    return Point32(
+        x=u / float(width - 1),
+        y=v / float(height - 1),
+        z=depth_m,
+    )
+
+
+def prepare_metric_hand_for_output(
+    metric_points: Sequence[Point32],
+    intrinsics: CameraIntrinsics,
+    image_width: int,
+    image_height: int,
+    transform: Callable[[int, Point32], Point32] | None = None,
+) -> tuple[list[Point32], list[Point32]] | None:
+    """
+    Prepare one canonical metric hand and its filtered image projection.
+
+    ``transform`` is called exactly once per point. The returned metric points
+    are intended for reference handling and publication; their projections are
+    intended for visualization. If any transformed point cannot be projected,
+    no hand is returned, so callers never need a raw-image fallback.
+    """
+    prepared_metric_points = []
+    image_points = []
+    for index, metric_point in enumerate(metric_points):
+        prepared_point = (
+            transform(index, metric_point)
+            if transform is not None
+            else metric_point
+        )
+        image_point = project_to_normalized_image(
+            prepared_point,
+            intrinsics,
+            image_width,
+            image_height,
+        )
+        if image_point is None:
+            return None
+        prepared_metric_points.append(prepared_point)
+        image_points.append(image_point)
+
+    return prepared_metric_points, image_points

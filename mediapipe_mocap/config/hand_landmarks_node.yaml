@@ -19,8 +19,8 @@ hand_landmarks_node:
     reset_reference_topic: "/reset_reference"
     reset_reference_cooldown_sec: 0.25
     initial_reference: [0.5, 0.5, 0.5]
-    show_control_zones: true
-    dead_zone: 0.05
-    saturation_zone: 0.3
+    show_control_overlay: true
+    overlay_dead_zone: 0.05
+    overlay_saturation_zone: 0.3
+    overlay_normalization_mode: "vector"  # Options: "axis", "vector"
     tracked_landmark_index: 0
-    

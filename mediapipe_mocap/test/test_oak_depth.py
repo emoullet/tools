@@ -37,6 +37,8 @@ from mediapipe_mocap.oak_depth import (
     MissingDepthStrategy,
     OakDepthProjector,
     parse_missing_depth_strategy,
+    prepare_metric_hand_for_output,
+    project_to_normalized_image,
 )
 import numpy as np
 import pytest
@@ -122,6 +124,126 @@ def test_back_projection_uses_rgb_camera_intrinsics():
     assert point.x == pytest.approx(0.2)
     assert point.y == pytest.approx(0.2)
     assert point.z == pytest.approx(2.0)
+
+
+def test_metric_projection_is_inverse_of_back_projection():
+    """Filtered camera points should reproject to their source image location."""
+    intrinsics = CameraIntrinsics(100.0, 200.0, 1.0, 1.0)
+    metric_point = back_project(
+        u=21.0,
+        v=31.0,
+        depth_m=1.5,
+        intrinsics=intrinsics,
+    )
+
+    image_point = project_to_normalized_image(
+        metric_point,
+        intrinsics,
+        image_width=101,
+        image_height=201,
+    )
+
+    assert image_point is not None
+    assert image_point.x == pytest.approx(0.21)
+    assert image_point.y == pytest.approx(0.155)
+    assert image_point.z == pytest.approx(1.5)
+
+
+@pytest.mark.parametrize(
+    ('point', 'intrinsics', 'width', 'height'),
+    [
+        (
+            SimpleNamespace(x=0.0, y=0.0, z=0.0),
+            CameraIntrinsics(100.0, 200.0, 1.0, 1.0),
+            101,
+            201,
+        ),
+        (
+            SimpleNamespace(x=float('nan'), y=0.0, z=1.0),
+            CameraIntrinsics(100.0, 200.0, 1.0, 1.0),
+            101,
+            201,
+        ),
+        (
+            SimpleNamespace(x=0.0, y=0.0, z=1.0),
+            CameraIntrinsics(0.0, 200.0, 1.0, 1.0),
+            101,
+            201,
+        ),
+        (
+            SimpleNamespace(x=0.0, y=0.0, z=1.0),
+            CameraIntrinsics(100.0, 200.0, 1.0, 1.0),
+            1,
+            201,
+        ),
+    ],
+)
+def test_metric_projection_rejects_invalid_inputs(
+    point,
+    intrinsics,
+    width,
+    height,
+):
+    """Invalid filtered points should skip display instead of using raw pixels."""
+    assert project_to_normalized_image(
+        point,
+        intrinsics,
+        width,
+        height,
+    ) is None
+
+
+def test_filtered_metric_points_are_reprojected_without_mutating_input():
+    """Output and display should share one transformed metric collection."""
+    source_points = [
+        SimpleNamespace(x=0.0, y=0.0, z=1.0),
+        SimpleNamespace(x=0.1, y=0.2, z=1.0),
+    ]
+    calls = []
+
+    def transform(index, point):
+        calls.append(index)
+        return SimpleNamespace(
+            x=point.x + 0.1,
+            y=point.y,
+            z=point.z + 1.0,
+        )
+
+    prepared = prepare_metric_hand_for_output(
+        source_points,
+        CameraIntrinsics(100.0, 100.0, 0.0, 0.0),
+        image_width=101,
+        image_height=101,
+        transform=transform,
+    )
+
+    assert prepared is not None
+    metric_points, image_points = prepared
+    assert calls == [0, 1]
+    assert metric_points[0].x == pytest.approx(0.1)
+    assert metric_points[0].z == pytest.approx(2.0)
+    assert image_points[0].x == pytest.approx(0.05)
+    assert image_points[0].y == pytest.approx(0.0)
+    assert image_points[0].z == pytest.approx(metric_points[0].z)
+    assert source_points[0].x == pytest.approx(0.0)
+    assert source_points[0].z == pytest.approx(1.0)
+
+
+def test_invalid_filtered_projection_rejects_the_entire_display_hand():
+    """A bad post-filter point should never fall back to raw image landmarks."""
+    prepared = prepare_metric_hand_for_output(
+        [SimpleNamespace(x=0.0, y=0.0, z=1.0)],
+        CameraIntrinsics(100.0, 100.0, 0.0, 0.0),
+        image_width=101,
+        image_height=101,
+        transform=lambda _index, point: SimpleNamespace(
+            x=point.x,
+            y=point.y,
+            z=0.0,
+        ),
+    )
+
+    assert prepared is None
 
 
 def test_skip_frame_strategy_rejects_any_missing_depth():

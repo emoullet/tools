@@ -26,126 +26,128 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
+"""Launch the OAK MediaPipe hand-landmarks producer."""
+
 import os
 
 from ament_index_python.packages import get_package_share_directory
+
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
+
 from launch_ros.actions import Node
-from launch_ros.parameter_descriptions import ParameterValue
+
+
+USE_YAML_DEFAULT = '__use_yaml__'
+
+
+def _parse_bool(value):
+    """Parse a resolved ROS launch boolean."""
+    return value.lower() in ('1', 'true', 'yes', 'on')
+
+
+def _create_node(context):
+    """Create the OAK producer with only explicit terminal overrides."""
+    overrides = {}
+    for argument_name, parameter_name, value_type in (
+        ('fps', 'fps', float),
+        ('rgb_width', 'rgb_width', int),
+        ('rgb_height', 'rgb_height', int),
+        ('visualize', 'visualize', _parse_bool),
+        ('window_name', 'window_name', str),
+        ('show_control_overlay', 'show_control_overlay', _parse_bool),
+        ('overlay_dead_zone', 'overlay_dead_zone', float),
+        ('overlay_saturation_zone', 'overlay_saturation_zone', float),
+        ('overlay_normalization_mode', 'overlay_normalization_mode', str),
+        ('landmark_index', 'tracked_landmark_index', int),
+    ):
+        value = LaunchConfiguration(argument_name).perform(context)
+        if value != USE_YAML_DEFAULT:
+            overrides[parameter_name] = value_type(value)
+
+    return [
+        Node(
+            package='mediapipe_mocap',
+            executable='oak_hand_landmarks_node',
+            name='oak_hand_landmarks_node',
+            output='screen',
+            parameters=[
+                LaunchConfiguration('oak_config_file'),
+                overrides,
+            ],
+        )
+    ]
 
 
 def generate_launch_description():
     """Create the standalone OAK 3D hand landmarks launch description."""
     package_share_dir = get_package_share_directory('mediapipe_mocap')
-    oak_hand_landmarks_config = os.path.join(
+    config_file = os.path.join(
         package_share_dir,
         'config',
         'oak_hand_landmarks_node.yaml',
     )
 
-    fps_arg = DeclareLaunchArgument(
-        'fps',
-        default_value='50.0',
-        description='OAK camera FPS',
-    )
-
-    rgb_width_arg = DeclareLaunchArgument(
-        'rgb_width',
-        default_value='640',
-        description='OAK RGB/depth output width in pixels',
-    )
-
-    rgb_height_arg = DeclareLaunchArgument(
-        'rgb_height',
-        default_value='400',
-        description='OAK RGB/depth output height in pixels',
-    )
-
-    visualize_arg = DeclareLaunchArgument(
-        'visualize',
-        default_value='false',
-        description='Show local OpenCV visualization window in oak_hand_landmarks_node',
-    )
-
-    window_name_arg = DeclareLaunchArgument(
-        'window_name',
-        default_value='3D Hand Landmarks OAK',
-        description='OpenCV window title when visualize is enabled',
-    )
-
-    oak_config_file_arg = DeclareLaunchArgument(
-        'oak_config_file',
-        default_value=oak_hand_landmarks_config,
-        description='Path to OAK 3D hand landmarks config file',
-    )
-
-    dead_zone_arg = DeclareLaunchArgument(
-        'dead_zone',
-        default_value='0.05',
-        description='Dead zone radius used by the OAK feedback overlay',
-    )
-
-    saturation_zone_arg = DeclareLaunchArgument(
-        'saturation_zone',
-        default_value='0.4',
-        description='Display-only XYZ saturation distance for the feedback overlay',
-    )
-
-    landmark_index_arg = DeclareLaunchArgument(
-        'landmark_index',
-        default_value='0',
-        description='Tracked landmark index (0-20) for OAK feedback overlay',
-    )
-
-    oak_hand_landmarks_node = Node(
-        package='mediapipe_mocap',
-        executable='oak_hand_landmarks_node',
-        name='oak_hand_landmarks_node',
-        output='screen',
-        parameters=[
-            LaunchConfiguration('oak_config_file'),
-            {
-                'fps': ParameterValue(LaunchConfiguration('fps'), value_type=float),
-                'rgb_width': ParameterValue(
-                    LaunchConfiguration('rgb_width'),
-                    value_type=int,
-                ),
-                'rgb_height': ParameterValue(
-                    LaunchConfiguration('rgb_height'),
-                    value_type=int,
-                ),
-                'visualize': ParameterValue(
-                    LaunchConfiguration('visualize'),
-                    value_type=bool,
-                ),
-                'window_name': LaunchConfiguration('window_name'),
-                'dead_zone': ParameterValue(
-                    LaunchConfiguration('dead_zone'),
-                    value_type=float,
-                ),
-                'saturation_zone': ParameterValue(
-                    LaunchConfiguration('saturation_zone'),
-                    value_type=float,
-                ),
-                'tracked_landmark_index': ParameterValue(
-                    LaunchConfiguration('landmark_index'),
-                    value_type=int,
-                ),
-            },
-        ],
-    )
+    arguments = [
+        DeclareLaunchArgument(
+            'oak_config_file',
+            default_value=config_file,
+            description='Path to the OAK producer YAML parameter file',
+        ),
+        DeclareLaunchArgument(
+            'fps',
+            default_value=USE_YAML_DEFAULT,
+            description='Override the YAML OAK camera FPS',
+        ),
+        DeclareLaunchArgument(
+            'rgb_width',
+            default_value=USE_YAML_DEFAULT,
+            description='Override the YAML RGB/depth output width',
+        ),
+        DeclareLaunchArgument(
+            'rgb_height',
+            default_value=USE_YAML_DEFAULT,
+            description='Override the YAML RGB/depth output height',
+        ),
+        DeclareLaunchArgument(
+            'visualize',
+            default_value=USE_YAML_DEFAULT,
+            description='Override the YAML OpenCV visualization setting',
+        ),
+        DeclareLaunchArgument(
+            'window_name',
+            default_value=USE_YAML_DEFAULT,
+            description='Override the YAML OpenCV window title',
+        ),
+        DeclareLaunchArgument(
+            'show_control_overlay',
+            default_value=USE_YAML_DEFAULT,
+            description='Override the YAML control-overlay visibility',
+        ),
+        DeclareLaunchArgument(
+            'overlay_dead_zone',
+            default_value=USE_YAML_DEFAULT,
+            description='Override the YAML metric dead-zone radius',
+        ),
+        DeclareLaunchArgument(
+            'overlay_saturation_zone',
+            default_value=USE_YAML_DEFAULT,
+            description='Override the YAML metric saturation radius',
+        ),
+        DeclareLaunchArgument(
+            'overlay_normalization_mode',
+            default_value=USE_YAML_DEFAULT,
+            description='Override the YAML axis or vector overlay mode',
+        ),
+        DeclareLaunchArgument(
+            'landmark_index',
+            default_value=USE_YAML_DEFAULT,
+            description='Override the YAML tracked landmark index (0-20)',
+        ),
+    ]
 
     return LaunchDescription([
-        fps_arg,
-        rgb_width_arg,
-        rgb_height_arg,
-        visualize_arg,
-        window_name_arg,
-        oak_config_file_arg,
-        dead_zone_arg,
-        saturation_zone_arg,
-        landmark_index_arg,
-        oak_hand_landmarks_node,
+        *arguments,
+        OpaqueFunction(function=_create_node),
     ])

@@ -28,12 +28,18 @@
 
 """ROS-independent OpenCV visualization for hand landmarks."""
 
+from dataclasses import dataclass
+from enum import Enum
 import time
 
 import cv2
 
 from mediapipe_mocap.mediapipe_runtime import PeriodicPerformanceTracker
 import numpy as np
+from signal_processing import (
+    apply_norm_dead_zone,
+    apply_scaled_dead_zone_per_axis,
+)
 
 
 HAND_CONNECTIONS = [
@@ -44,6 +50,65 @@ HAND_CONNECTIONS = [
     (13, 17), (17, 18), (18, 19), (19, 20),
     (0, 17),
 ]
+
+_CUBOID_EDGES = (
+    (0, 1), (0, 2), (0, 4),
+    (1, 3), (1, 5),
+    (2, 3), (2, 6),
+    (3, 7),
+    (4, 5), (4, 6),
+    (5, 7),
+    (6, 7),
+)
+
+
+class OverlayNormalizationMode(Enum):
+    """Control normalization policies supported by the debug overlay."""
+
+    AXIS = 'axis'
+    VECTOR = 'vector'
+
+
+def parse_overlay_normalization_mode(value, warn=None):
+    """Parse an overlay mode, falling back to vector normalization."""
+    normalized = str(value).lower()
+    try:
+        return OverlayNormalizationMode(normalized)
+    except ValueError:
+        if warn is not None:
+            warn(
+                'Invalid overlay_normalization_mode '
+                f"'{normalized}', falling back to 'vector'."
+            )
+        return OverlayNormalizationMode.VECTOR
+
+
+@dataclass(frozen=True)
+class ControlOverlayConfig:
+    """Display-only control-zone and normalization configuration."""
+
+    dead_zone: float
+    saturation_zone: float
+    normalization_mode: OverlayNormalizationMode
+
+    @property
+    def effective_saturation_zone(self):
+        """Return the saturation boundary used by shared signal processing."""
+        return max(abs(float(self.saturation_zone)), abs(float(self.dead_zone)))
+
+    def normalize(self, displacement):
+        """Normalize a filtered displacement for display only."""
+        if self.normalization_mode is OverlayNormalizationMode.AXIS:
+            return apply_scaled_dead_zone_per_axis(
+                displacement,
+                self.dead_zone,
+                self.saturation_zone,
+            )
+        return apply_norm_dead_zone(
+            displacement,
+            self.dead_zone,
+            self.saturation_zone,
+        )
 
 
 class HandLandmarksViewer:
@@ -71,9 +136,8 @@ class HandLandmarksViewer:
         mediapipe_time_sec=None,
         reference_xyz=None,
         tracked_landmark_index=0,
-        show_control_zones=True,
-        dead_zone=0.0,
-        saturation_zone=0.3,
+        control_overlay=None,
+        displacement_scale=(1.0, 1.0, 1.0),
     ):
         """
         Render a 2D hand-landmark frame and return whether exit was requested.
@@ -88,9 +152,8 @@ class HandLandmarksViewer:
             reference_xyz,
             hands[0] if hands else None,
             tracked_landmark_index,
-            show_control_zones,
-            dead_zone,
-            saturation_zone,
+            control_overlay,
+            displacement_scale,
         )
         return self._show(annotated)
 
@@ -105,10 +168,8 @@ class HandLandmarksViewer:
         reference_image=None,
         reference_initialized=False,
         tracked_landmark_index=0,
-        show_control_zones=True,
-        dead_zone=0.0,
-        saturation_zone=0.3,
-        focal_length_px=None,
+        control_overlay=None,
+        camera_intrinsics=None,
     ):
         """
         Render a metric 3D frame and return whether exit was requested.
@@ -130,10 +191,8 @@ class HandLandmarksViewer:
             reference_image,
             reference_initialized,
             tracked_landmark_index,
-            show_control_zones,
-            dead_zone,
-            saturation_zone,
-            focal_length_px,
+            control_overlay,
+            camera_intrinsics,
         )
         return self._show(annotated)
 
@@ -219,9 +278,8 @@ class HandLandmarksViewer:
         reference_xyz,
         primary_hand,
         tracked_landmark_index,
-        show_control_zones,
-        dead_zone,
-        saturation_zone,
+        control_overlay,
+        displacement_scale,
     ):
         """Draw normalized reference and control-zone feedback."""
         if reference_xyz is None:
@@ -244,12 +302,35 @@ class HandLandmarksViewer:
             2,
         )
 
-        if show_control_zones:
-            min_dimension = min(width, height)
+        if control_overlay is None:
+            return
+
+        min_dimension = min(width, height)
+        dead_zone = abs(float(control_overlay.dead_zone))
+        saturation_zone = control_overlay.effective_saturation_zone
+        if (
+            control_overlay.normalization_mode
+            is OverlayNormalizationMode.AXIS
+        ):
+            HandLandmarksViewer._draw_2d_axis_zone(
+                image,
+                ref_px,
+                dead_zone,
+                min_dimension,
+                (0, 255, 255),
+            )
+            HandLandmarksViewer._draw_2d_axis_zone(
+                image,
+                ref_px,
+                saturation_zone,
+                min_dimension,
+                (255, 128, 0),
+            )
+        else:
             cv2.circle(
                 image,
                 ref_px,
-                max(1, int(float(dead_zone) * min_dimension)),
+                max(1, int(dead_zone * min_dimension)),
                 (0, 255, 255),
                 2,
                 cv2.LINE_AA,
@@ -257,20 +338,21 @@ class HandLandmarksViewer:
             cv2.circle(
                 image,
                 ref_px,
-                max(1, int(float(saturation_zone) * min_dimension)),
+                max(1, int(saturation_zone * min_dimension)),
                 (255, 128, 0),
                 2,
                 cv2.LINE_AA,
             )
-            cv2.putText(
-                image,
-                f'DZ: {dead_zone:.2f}  SAT: {saturation_zone:.2f}',
-                (10, 145),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (255, 255, 255),
-                2,
-            )
+        cv2.putText(
+            image,
+            f'CTRL {control_overlay.normalization_mode.value}  '
+            f'DZ: {dead_zone:.2f}  SAT: {saturation_zone:.2f}',
+            (10, 145),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (255, 255, 255),
+            2,
+        )
 
         if primary_hand and 0 <= tracked_landmark_index < len(primary_hand):
             landmark = primary_hand[tracked_landmark_index]
@@ -281,23 +363,31 @@ class HandLandmarksViewer:
             dx = float(landmark.x) - ref_x
             dy = float(landmark.y) - ref_y
             dz = float(landmark.z) - ref_z
-            distance = (dx * dx + dy * dy + dz * dz) ** 0.5
-            saturated = (
-                abs(dx) >= float(saturation_zone),
-                abs(dy) >= float(saturation_zone),
-                abs(dz) >= float(saturation_zone),
+            displacement = tuple(
+                value * float(scale)
+                for value, scale in zip(
+                    (dx, dy, dz),
+                    displacement_scale,
+                )
             )
+            normalized = control_overlay.normalize(displacement)
             cv2.circle(image, landmark_px, 7, (0, 0, 255), 2, cv2.LINE_AA)
             cv2.line(image, ref_px, landmark_px, (255, 0, 255), 1, cv2.LINE_AA)
-            status = 'DEAD' if distance < float(dead_zone) else 'ACTIVE'
+            status = HandLandmarksViewer._control_status(
+                displacement,
+                normalized,
+                control_overlay,
+            )
             cv2.putText(
                 image,
                 f'LM[{tracked_landmark_index}] {status} '
-                f'SAT[x:{int(saturated[0])} y:{int(saturated[1])} '
-                f'z:{int(saturated[2])}]',
+                f'd=({displacement[0]:.2f}, {displacement[1]:.2f}, '
+                f'{displacement[2]:.2f}) '
+                f'n=({normalized[0]:.2f}, {normalized[1]:.2f}, '
+                f'{normalized[2]:.2f})',
                 (10, 178),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
+                0.6,
                 (0, 220, 255),
                 2,
             )
@@ -310,10 +400,8 @@ class HandLandmarksViewer:
         reference_image,
         reference_initialized,
         tracked_landmark_index,
-        show_control_zones,
-        dead_zone,
-        saturation_zone,
-        focal_length_px,
+        control_overlay,
+        camera_intrinsics,
     ):
         """Draw metric reference and control-zone feedback."""
         if not reference_initialized or reference_metric is None:
@@ -329,18 +417,6 @@ class HandLandmarksViewer:
             )
         HandLandmarksViewer._draw_reference_marker(image, ref_px)
 
-        if show_control_zones and focal_length_px is not None:
-            ref_depth = max(abs(float(reference_metric[2])), 1e-6)
-            radius = max(
-                1,
-                int(
-                    float(focal_length_px)
-                    * float(saturation_zone)
-                    / ref_depth
-                ),
-            )
-            cv2.circle(image, ref_px, radius, (255, 128, 0), 2, cv2.LINE_AA)
-
         cv2.putText(
             image,
             f'Ref3D: ({reference_metric[0]:.2f}, {reference_metric[1]:.2f}, '
@@ -351,9 +427,51 @@ class HandLandmarksViewer:
             (255, 0, 255),
             2,
         )
+        if control_overlay is None:
+            return
+
+        dead_zone = abs(float(control_overlay.dead_zone))
+        saturation_zone = control_overlay.effective_saturation_zone
+        if camera_intrinsics is not None:
+            if (
+                control_overlay.normalization_mode
+                is OverlayNormalizationMode.AXIS
+            ):
+                HandLandmarksViewer._draw_projected_cuboid(
+                    image,
+                    reference_metric,
+                    dead_zone,
+                    camera_intrinsics,
+                    (0, 255, 255),
+                )
+                HandLandmarksViewer._draw_projected_cuboid(
+                    image,
+                    reference_metric,
+                    saturation_zone,
+                    camera_intrinsics,
+                    (255, 128, 0),
+                )
+            else:
+                HandLandmarksViewer._draw_projected_sphere(
+                    image,
+                    ref_px,
+                    reference_metric,
+                    dead_zone,
+                    camera_intrinsics,
+                    (0, 255, 255),
+                )
+                HandLandmarksViewer._draw_projected_sphere(
+                    image,
+                    ref_px,
+                    reference_metric,
+                    saturation_zone,
+                    camera_intrinsics,
+                    (255, 128, 0),
+                )
         cv2.putText(
             image,
-            f'SAT m: {saturation_zone:.2f}',
+            f'CTRL {control_overlay.normalization_mode.value}  '
+            f'DZ: {dead_zone:.2f}m  SAT: {saturation_zone:.2f}m',
             (10, 145),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.7,
@@ -370,18 +488,131 @@ class HandLandmarksViewer:
             dx = float(landmark.x) - float(reference_metric[0])
             dy = float(landmark.y) - float(reference_metric[1])
             dz = float(landmark.z) - float(reference_metric[2])
-            distance = (dx * dx + dy * dy + dz * dz) ** 0.5
-            status = 'DEAD' if distance < float(dead_zone) else 'ACTIVE'
+            displacement = (dx, dy, dz)
+            normalized = control_overlay.normalize(displacement)
+            status = HandLandmarksViewer._control_status(
+                displacement,
+                normalized,
+                control_overlay,
+            )
             cv2.putText(
                 image,
                 f'LM[{tracked_landmark_index}] {status} '
-                f'd=({dx:.2f}, {dy:.2f}, {dz:.2f}) m',
+                f'd=({dx:.2f}, {dy:.2f}, {dz:.2f})m '
+                f'n=({normalized[0]:.2f}, {normalized[1]:.2f}, '
+                f'{normalized[2]:.2f})',
                 (10, 178),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.65,
+                0.55,
                 (0, 220, 255),
                 2,
             )
+
+    @staticmethod
+    def _draw_2d_axis_zone(image, center, zone, min_dimension, color):
+        """Draw one component-wise 2D control boundary."""
+        radius = max(1, int(float(zone) * min_dimension))
+        cv2.rectangle(
+            image,
+            (center[0] - radius, center[1] - radius),
+            (center[0] + radius, center[1] + radius),
+            color,
+            2,
+            cv2.LINE_AA,
+        )
+
+    @staticmethod
+    def _draw_projected_sphere(
+        image,
+        center,
+        reference_metric,
+        radius_m,
+        camera_intrinsics,
+        color,
+    ):
+        """Draw an image-plane approximation of one metric sphere."""
+        fx, fy, _, _ = camera_intrinsics
+        depth_m = float(reference_metric[2])
+        if depth_m <= 1e-9:
+            return
+        axes = (
+            max(1, int(abs(float(fx) * float(radius_m) / depth_m))),
+            max(1, int(abs(float(fy) * float(radius_m) / depth_m))),
+        )
+        cv2.ellipse(
+            image,
+            center,
+            axes,
+            0.0,
+            0.0,
+            360.0,
+            color,
+            2,
+            cv2.LINE_AA,
+        )
+
+    @staticmethod
+    def _draw_projected_cuboid(
+        image,
+        reference_metric,
+        half_extent_m,
+        camera_intrinsics,
+        color,
+    ):
+        """Project and draw one axis-aligned metric cuboid."""
+        ref_x, ref_y, ref_z = (float(value) for value in reference_metric)
+        extent = abs(float(half_extent_m))
+        corners = [
+            (ref_x + sx * extent, ref_y + sy * extent, ref_z + sz * extent)
+            for sx in (-1.0, 1.0)
+            for sy in (-1.0, 1.0)
+            for sz in (-1.0, 1.0)
+        ]
+        projected = [
+            HandLandmarksViewer._metric_point_to_pixel(point, camera_intrinsics)
+            for point in corners
+        ]
+        if any(point is None for point in projected):
+            return
+        for start, end in _CUBOID_EDGES:
+            cv2.line(
+                image,
+                projected[start],
+                projected[end],
+                color,
+                2,
+                cv2.LINE_AA,
+            )
+
+    @staticmethod
+    def _metric_point_to_pixel(point, camera_intrinsics):
+        """Project one metric camera point into image pixels."""
+        fx, fy, cx, cy = (float(value) for value in camera_intrinsics)
+        x, y, z = (float(value) for value in point)
+        if z <= 1e-9:
+            return None
+        return (
+            int(round(fx * x / z + cx)),
+            int(round(fy * y / z + cy)),
+        )
+
+    @staticmethod
+    def _control_status(displacement, normalized, control_overlay):
+        """Classify a display-only normalized control preview."""
+        if all(abs(float(value)) <= 1e-12 for value in normalized):
+            return 'DEAD'
+        saturation = control_overlay.effective_saturation_zone
+        if (
+            control_overlay.normalization_mode
+            is OverlayNormalizationMode.AXIS
+        ):
+            saturated = any(
+                abs(float(value)) >= saturation for value in displacement
+            )
+        else:
+            magnitude = sum(float(value) ** 2 for value in displacement) ** 0.5
+            saturated = magnitude >= saturation
+        return 'SATURATED' if saturated else 'ACTIVE'
 
     @staticmethod
     def _draw_reference_marker(image, point):

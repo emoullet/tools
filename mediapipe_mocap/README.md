@@ -67,16 +67,18 @@ a parameter file.
 | `reset_reference_topic` | string | `/reset_reference` | Topic used to recenter the hand reference |
 | `reset_reference_cooldown_sec` | double | 0.25 | Minimum time between accepted reference resets |
 | `initial_reference` | double array | `[0.5, 0.5, 0.5]` | Initial reference point in normalized image coordinates |
-| `show_control_zones` | bool | true | Draw dead-zone and saturation-zone overlays when visualizing |
-| `dead_zone` | double | 0.05 | Display-only dead-zone radius used by the viewer |
-| `saturation_zone` | double | 0.3 | Display-only saturation boundary used by the viewer |
+| `show_control_overlay` | bool | false | Draw the optional display-only control preview |
+| `overlay_dead_zone` | double | 0.05 | Display-only dead-zone radius; ignored when the control overlay is disabled |
+| `overlay_saturation_zone` | double | 0.3 | Display-only saturation boundary; ignored when the control overlay is disabled |
+| `overlay_normalization_mode` | string | `vector` | Display-only `axis` or `vector` normalization preview; invalid values warn and fall back to `vector` |
 | `tracked_landmark_index` | int | 0 | Landmark used for reference reset and control-zone feedback |
 
 The built-in defaults and shipped `config/hand_landmarks_node.yaml` both enable
 One Euro filtering with `frequency=30.0`, `mincutoff=1.0`, `beta=0.1`, and
 `derivative_cutoff=1.0`. The shipped YAML enables visualization, while the
-standalone launch overrides it to `false`. The USB-camera launch uses the YAML
-default and overrides `selfie_mode=true`.
+standalone launch now leaves visualization and overlay values to that YAML.
+The USB-camera launch overrides only its integration-specific settings, such
+as `selfie_mode=true`.
 
 ## Usage
 
@@ -166,9 +168,9 @@ ros2 run mediapipe_mocap hand_landmarks_node
 The OAK node captures RGB and stereo depth directly with DepthAI v3, aligns depth
 to the RGB frame, runs MediaPipe HandLandmarker on RGB, back-projects each
 landmark with the RGB intrinsics, and publishes 21 reference-relative 3D points.
-By default those points are saturated normalized control inputs in `[-1, 1]`.
-The producer does not apply the `dead_zone`; that parameter affects only the
-viewer overlay.
+Those points remain metric RGB-camera offsets in meters. Dead-zone and
+saturation normalization belong to consumers; the optional producer overlay is
+display-only.
 
 Use the standalone launch file (recommended):
 
@@ -198,7 +200,8 @@ ros2 launch mediapipe_mocap oak_hand_landmarks_launch.py \
   rgb_width:=640 \
   rgb_height:=400 \
   visualize:=true \
-  saturation_zone:=0.4 \
+  show_control_overlay:=true \
+  overlay_saturation_zone:=0.4 \
   landmark_index:=0
 ```
 
@@ -212,15 +215,17 @@ Key OAK parameters:
 | `delegate` | `AUTO` | MediaPipe execution policy; `AUTO` provides GPU-to-CPU fallback on native Linux |
 | `stereo_preset` | `FAST_DENSITY` | DepthAI StereoDepth preset |
 | `depth_sample_radius_px` | `2` | Median/percentile depth sampling window radius around each landmark |
-| `saturation_zone` | `0.4` | Display-only metric saturation boundary used by the viewer |
-| `dead_zone` | `0.05` | Display-only radius; it does not modify published points |
+| `show_control_overlay` | `false` | Show a display-only preview of control normalization |
+| `overlay_saturation_zone` | `0.3` | Display-only metric saturation boundary; ignored when the overlay is disabled |
+| `overlay_dead_zone` | `0.05` | Display-only metric dead-zone boundary; ignored when the overlay is disabled |
+| `overlay_normalization_mode` | `vector` | Display-only `axis` or `vector` preview |
 | `auto_reference_on_first_detection` | `true` | Use the first valid tracked landmark as the 3D reference |
 | `reset_reference_topic` | `/reset_reference` | Reset topic shared by both producers |
 | `enable_one_euro_filter` | `true` | Enable shared One Euro filtering |
 | `one_euro_mincutoff` | `1.0` | Minimum cutoff frequency in Hz |
 | `one_euro_beta` | `0.1` | Speed coefficient |
 | `one_euro_derivative_cutoff` | `1.0` | Derivative low-pass cutoff frequency in Hz |
-| `visualize` | `true` | Show a local OpenCV window when loading the shipped OAK YAML; the standalone OAK launch overrides this to `false` |
+| `visualize` | `true` | Show a local OpenCV window when loading the shipped OAK YAML |
 
 The OAK filter derives its nominal fallback frequency from `fps`; filtering
 normally uses the timestamp interval between consecutive frames.
@@ -233,6 +238,19 @@ with the `visualize` parameter and select the OpenCV window title with
 callers as `mediapipe_mocap.viewer.HandLandmarksViewer`. The performance overlay
 refreshes half-second window averages for FPS and MediaPipe processing time;
 current-frame status such as missing OAK depth remains live.
+
+The viewer always receives the same post-filter landmark state used for
+reference handling and publication. For OAK, filtered metric points are
+reprojected through the RGB intrinsics for drawing; invalid reprojection skips
+that hand instead of falling back to raw MediaPipe image coordinates.
+
+Set `show_control_overlay:=true` to add a display-only joystick preview.
+`vector` mode draws circular/spherical zones and preserves displacement
+direction; `axis` mode draws rectangular/cuboid zones and normalizes each
+component independently. The preview reports filtered displacement, normalized
+value, and `DEAD`, `ACTIVE`, or `SATURATED` state. Overlay settings never change
+`/hand_landmarks`; when disabled, their tuning parameters are ignored while
+landmarks, reference, FPS, timing, and OAK depth status remain visible.
 
 ### Configuration
 
@@ -282,6 +300,12 @@ ros2 run mediapipe_mocap hand_landmarks_node \
 
 ## Launch Files
 
+Launch parameter arguments use `__use_yaml__` internally when they are omitted.
+That sentinel is never passed to a node. Effective parameter precedence is:
+an explicit terminal argument, then the loaded YAML parameter file, then the
+node's built-in declaration. Launch Python files do not inject another
+parameter default.
+
 ### hand_landmarks_launch.py
 Starts only the hand landmarks detection node:
 ```bash
@@ -293,6 +317,15 @@ With built-in visualization enabled:
 ros2 launch mediapipe_mocap hand_landmarks_launch.py visualize:=true window_name:="Hand Landmarks (Node)"
 ```
 
+Add the optional control preview with:
+
+```bash
+ros2 launch mediapipe_mocap hand_landmarks_launch.py \
+  visualize:=true \
+  show_control_overlay:=true \
+  overlay_normalization_mode:=vector
+```
+
 ### oak_hand_landmarks_launch.py
 Starts only the OAK-D S2 RGBD 3D hand landmarks node:
 ```bash
@@ -302,14 +335,16 @@ ros2 launch mediapipe_mocap oak_hand_landmarks_launch.py
 **Parameters:**
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `fps` | 50.0 | OAK camera FPS |
-| `rgb_width` | 640 | OAK RGB/depth output width in pixels |
-| `rgb_height` | 400 | OAK RGB/depth output height in pixels |
-| `visualize` | false | Show local OpenCV visualization window |
-| `window_name` | `3D Hand Landmarks OAK` | Window title when `visualize` is enabled |
-| `dead_zone` | 0.05 | Display-only dead-zone radius used by the OAK feedback overlay |
-| `saturation_zone` | 0.4 | Display-only XYZ saturation distance used by the feedback overlay |
-| `landmark_index` | 0 | Tracked landmark index (0-20) for OAK feedback overlay |
+| `fps` | YAML | Optional OAK camera FPS override |
+| `rgb_width` | YAML | Optional RGB/depth output-width override |
+| `rgb_height` | YAML | Optional RGB/depth output-height override |
+| `visualize` | YAML | Optional OpenCV visualization override |
+| `window_name` | YAML | Optional OpenCV window-title override |
+| `show_control_overlay` | YAML | Optional control-preview visibility override |
+| `overlay_dead_zone` | YAML | Optional display-only metric dead-zone override |
+| `overlay_saturation_zone` | YAML | Optional display-only metric saturation override |
+| `overlay_normalization_mode` | YAML | Optional `axis` or `vector` preview override |
+| `landmark_index` | YAML | Optional tracked-landmark override |
 | `reset_reference_topic` | `/reset_reference` | Reset topic loaded from the shipped OAK YAML |
 
 ### usb_cam_hand_landmarks_launch.py

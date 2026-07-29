@@ -52,9 +52,11 @@ def _patch_opencv(monkeypatch, key=-1):
         name: []
         for name in (
             'circle',
+            'ellipse',
             'line',
             'putText',
             'drawMarker',
+            'rectangle',
             'imshow',
             'destroyWindow',
         )
@@ -73,7 +75,7 @@ def _patch_opencv(monkeypatch, key=-1):
 
 
 def test_show_2d_draws_landmarks_connections_and_reference(monkeypatch):
-    """The 2D renderer should draw a complete hand and report a quit key."""
+    """Sensor diagnostics remain visible when the control overlay is disabled."""
     calls = _patch_opencv(monkeypatch, key=ord('q'))
     image = np.zeros((100, 200, 3), dtype=np.uint8)
     hand = [
@@ -88,8 +90,6 @@ def test_show_2d_draws_landmarks_connections_and_reference(monkeypatch):
         mediapipe_time_sec=0.012,
         reference_xyz=(0.5, 0.5, 0.0),
         tracked_landmark_index=0,
-        dead_zone=0.05,
-        saturation_zone=0.3,
     )
 
     landmark_circles = [
@@ -98,15 +98,79 @@ def test_show_2d_draws_landmarks_connections_and_reference(monkeypatch):
     ]
     assert len(landmark_circles) == 21
     assert landmark_circles[0][1] == (50, 50)
-    assert len(calls['line']) == len(viewer.HAND_CONNECTIONS) + 1
+    assert len(calls['line']) == len(viewer.HAND_CONNECTIONS)
     assert calls['drawMarker'][0][0][1] == (100, 50)
+    assert not any(
+        args[1].startswith('CTRL') for args, _ in calls['putText']
+    )
     assert calls['imshow'][0][0][0] == '2D'
     assert calls['imshow'][0][0][1] is not image
+    assert not np.any(image)
     assert exit_requested
 
 
-def test_show_3d_draws_metric_status_and_projected_zone(monkeypatch):
-    """The 3D renderer should project its metric saturation zone and status."""
+def test_vector_overlay_draws_circles_and_aspect_corrected_preview(monkeypatch):
+    """Vector preview should match the producer's aspect-corrected cloud."""
+    calls = _patch_opencv(monkeypatch)
+    image = np.zeros((100, 200, 3), dtype=np.uint8)
+    hand = [SimpleNamespace(x=0.65, y=0.5, z=0.0)]
+    config = viewer.ControlOverlayConfig(
+        dead_zone=0.1,
+        saturation_zone=0.5,
+        normalization_mode=viewer.OverlayNormalizationMode.VECTOR,
+    )
+
+    viewer.HandLandmarksViewer('2D').show_2d(
+        image,
+        [hand],
+        reference_xyz=(0.5, 0.5, 0.0),
+        control_overlay=config,
+        displacement_scale=(2.0, 1.0, 0.0),
+    )
+
+    assert len(calls['rectangle']) == 0
+    zone_radii = [
+        args[2] for args, _ in calls['circle']
+        if len(args) >= 6 and args[4] == 2
+    ]
+    assert zone_radii == [10, 50, 7]
+    text = [args[1] for args, _ in calls['putText']]
+    assert 'CTRL vector  DZ: 0.10  SAT: 0.50' in text
+    assert (
+        'LM[0] ACTIVE d=(0.30, 0.00, 0.00) '
+        'n=(0.50, 0.00, 0.00)'
+    ) in text
+
+
+def test_axis_overlay_draws_rectangles_and_per_axis_preview(monkeypatch):
+    """Axis preview should use rectangular zones and independent ramps."""
+    calls = _patch_opencv(monkeypatch)
+    image = np.zeros((100, 200, 3), dtype=np.uint8)
+    hand = [SimpleNamespace(x=0.85, y=0.55, z=0.0)]
+    config = viewer.ControlOverlayConfig(
+        dead_zone=0.1,
+        saturation_zone=0.3,
+        normalization_mode=viewer.OverlayNormalizationMode.AXIS,
+    )
+
+    viewer.HandLandmarksViewer('2D').show_2d(
+        image,
+        [hand],
+        reference_xyz=(0.5, 0.5, 0.0),
+        control_overlay=config,
+    )
+
+    assert len(calls['rectangle']) == 2
+    text = [args[1] for args, _ in calls['putText']]
+    assert 'CTRL axis  DZ: 0.10  SAT: 0.30' in text
+    assert (
+        'LM[0] SATURATED d=(0.35, 0.05, 0.00) '
+        'n=(1.00, 0.00, 0.00)'
+    ) in text
+
+
+def test_show_3d_draws_vector_preview_and_projected_spheres(monkeypatch):
+    """The 3D vector overlay should project metric spheres and preview status."""
     calls = _patch_opencv(monkeypatch)
     clock = _Clock()
     image = np.zeros((100, 200, 3), dtype=np.uint8)
@@ -125,18 +189,61 @@ def test_show_3d_draws_metric_status_and_projected_zone(monkeypatch):
         reference_image=(0.5, 0.5, 0.0),
         reference_initialized=True,
         tracked_landmark_index=0,
-        dead_zone=0.05,
-        saturation_zone=0.4,
-        focal_length_px=100.0,
+        control_overlay=viewer.ControlOverlayConfig(
+            dead_zone=0.05,
+            saturation_zone=0.4,
+            normalization_mode=viewer.OverlayNormalizationMode.VECTOR,
+        ),
+        camera_intrinsics=(100.0, 100.0, 100.0, 50.0),
     )
 
-    assert any(args[2] == 80 for args, _ in calls['circle'])
+    assert [args[2] for args, _ in calls['ellipse']] == [(10, 10), (80, 80)]
     text = [args[1] for args, _ in calls['putText']]
     assert 'FPS: 2.0' in text
     assert 'MP avg: 10.0ms  missing depth: 2' in text
     assert 'Ref3D: (0.00, 0.00, 0.50) m' in text
-    assert 'LM[0] ACTIVE d=(0.20, 0.00, 0.00) m' in text
+    assert (
+        'LM[0] ACTIVE d=(0.20, 0.00, 0.00)m '
+        'n=(0.43, 0.00, 0.00)'
+    ) in text
     assert not exit_requested
+
+
+def test_3d_axis_overlay_projects_cuboids(monkeypatch):
+    """Axis mode should draw cuboid edges rather than sphere ellipses."""
+    calls = _patch_opencv(monkeypatch)
+    image = np.zeros((100, 200, 3), dtype=np.uint8)
+    config = viewer.ControlOverlayConfig(
+        dead_zone=0.05,
+        saturation_zone=0.1,
+        normalization_mode=viewer.OverlayNormalizationMode.AXIS,
+    )
+
+    viewer.HandLandmarksViewer('3D').show_3d(
+        image,
+        [],
+        reference_metric=(0.0, 0.0, 0.5),
+        reference_image=(0.5, 0.5, 0.5),
+        reference_initialized=True,
+        control_overlay=config,
+        camera_intrinsics=(100.0, 100.0, 100.0, 50.0),
+    )
+
+    assert len(calls['ellipse']) == 0
+    assert len(calls['line']) == 2 * len(viewer._CUBOID_EDGES)
+
+
+def test_invalid_overlay_mode_warns_and_falls_back_to_vector():
+    """Unknown overlay modes should not prevent the producer from starting."""
+    warnings = []
+
+    mode = viewer.parse_overlay_normalization_mode('diagonal', warnings.append)
+
+    assert mode is viewer.OverlayNormalizationMode.VECTOR
+    assert warnings == [
+        "Invalid overlay_normalization_mode 'diagonal', "
+        "falling back to 'vector'."
+    ]
 
 
 def test_performance_overlay_updates_once_per_window(monkeypatch):

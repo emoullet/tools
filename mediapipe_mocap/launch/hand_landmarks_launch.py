@@ -26,46 +26,104 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
+"""Launch the RGB MediaPipe hand-landmarks producer."""
+
 import os
 
 from ament_index_python.packages import get_package_share_directory
+
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
+
 from launch_ros.actions import Node
 
 
-def generate_launch_description():
-    """Create the standalone 2D hand landmarks launch description."""
-    package_share_dir = get_package_share_directory('mediapipe_mocap')
-    config_file = os.path.join(package_share_dir, 'config', 'hand_landmarks_node.yaml')
+USE_YAML_DEFAULT = '__use_yaml__'
 
-    visualize_arg = DeclareLaunchArgument(
-        'visualize',
-        default_value='false',
-        description='Show local OpenCV visualization window in hand_landmarks_node',
-    )
 
-    window_name_arg = DeclareLaunchArgument(
-        'window_name',
-        default_value='Hand Landmarks (Node)',
-        description='OpenCV window title when visualize is enabled',
-    )
+def _parse_bool(value):
+    """Parse a resolved ROS launch boolean."""
+    return value.lower() in ('1', 'true', 'yes', 'on')
 
-    return LaunchDescription([
-        visualize_arg,
-        window_name_arg,
+
+def _create_node(context):
+    """Create the producer with only explicit terminal overrides."""
+    overrides = {}
+    for argument_name, parameter_name, value_type in (
+        ('visualize', 'visualize', _parse_bool),
+        ('window_name', 'window_name', str),
+        ('show_control_overlay', 'show_control_overlay', _parse_bool),
+        ('overlay_dead_zone', 'overlay_dead_zone', float),
+        ('overlay_saturation_zone', 'overlay_saturation_zone', float),
+        ('overlay_normalization_mode', 'overlay_normalization_mode', str),
+    ):
+        value = LaunchConfiguration(argument_name).perform(context)
+        if value != USE_YAML_DEFAULT:
+            overrides[parameter_name] = value_type(value)
+
+    return [
         Node(
             package='mediapipe_mocap',
             executable='hand_landmarks_node',
             name='hand_landmarks_node',
             output='screen',
             parameters=[
-                config_file,
-                {
-                    'visualize': LaunchConfiguration('visualize'),
-                    'window_name': LaunchConfiguration('window_name'),
-                },
-            ]
+                LaunchConfiguration('config_file'),
+                overrides,
+            ],
         )
+    ]
+
+
+def generate_launch_description():
+    """Create the standalone 2D hand landmarks launch description."""
+    package_share_dir = get_package_share_directory('mediapipe_mocap')
+    config_file = os.path.join(
+        package_share_dir,
+        'config',
+        'hand_landmarks_node.yaml',
+    )
+
+    arguments = [
+        DeclareLaunchArgument(
+            'config_file',
+            default_value=config_file,
+            description='Path to the producer YAML parameter file',
+        ),
+        DeclareLaunchArgument(
+            'visualize',
+            default_value=USE_YAML_DEFAULT,
+            description='Override the YAML OpenCV visualization setting',
+        ),
+        DeclareLaunchArgument(
+            'window_name',
+            default_value=USE_YAML_DEFAULT,
+            description='Override the YAML OpenCV window title',
+        ),
+        DeclareLaunchArgument(
+            'show_control_overlay',
+            default_value=USE_YAML_DEFAULT,
+            description='Override the YAML control-overlay visibility',
+        ),
+        DeclareLaunchArgument(
+            'overlay_dead_zone',
+            default_value=USE_YAML_DEFAULT,
+            description='Override the YAML display-only dead-zone radius',
+        ),
+        DeclareLaunchArgument(
+            'overlay_saturation_zone',
+            default_value=USE_YAML_DEFAULT,
+            description='Override the YAML display-only saturation radius',
+        ),
+        DeclareLaunchArgument(
+            'overlay_normalization_mode',
+            default_value=USE_YAML_DEFAULT,
+            description='Override the YAML axis or vector overlay mode',
+        ),
+    ]
+
+    return LaunchDescription([
+        *arguments,
+        OpaqueFunction(function=_create_node),
     ])

@@ -33,7 +33,6 @@ import time
 
 from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge  # noqa: F401
-from geometry_msgs.msg import Point32
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import PointCloud
@@ -61,12 +60,17 @@ from mediapipe_mocap.oak_depth import (
     DepthProcessingConfig,
     OakDepthProjector,
     parse_missing_depth_strategy,
+    prepare_metric_hand_for_output,
 )
 from mediapipe_mocap.reference import (
     ReferenceState,
     ResetRequestResult,
 )
-from mediapipe_mocap.viewer import HandLandmarksViewer
+from mediapipe_mocap.viewer import (
+    ControlOverlayConfig,
+    HandLandmarksViewer,
+    parse_overlay_normalization_mode,
+)
 
 
 prepare_runtime_imports()
@@ -134,8 +138,10 @@ class OakHandLandmarksNode(Node):
                 ('depth_percentile', 50.0),
                 ('missing_depth_strategy', 'reuse_last'),
                 ('max_missing_depth_landmarks', 8),
-                ('saturation_zone', 0.4),
-                ('dead_zone', 0.05),
+                ('show_control_overlay', False),
+                ('overlay_dead_zone', 0.05),
+                ('overlay_saturation_zone', 0.3),
+                ('overlay_normalization_mode', 'vector'),
                 ('tracked_landmark_index', 0),
                 ('initial_reference', [0.0, 0.0, 0.6]),
                 ('auto_reference_on_first_detection', True),
@@ -147,7 +153,6 @@ class OakHandLandmarksNode(Node):
                 ('one_euro_derivative_cutoff', 1.0),
                 ('visualize', False),
                 ('window_name', '3D Hand Landmarks OAK'),
-                ('show_control_zones', True),
             ],
         )
 
@@ -184,8 +189,20 @@ class OakHandLandmarksNode(Node):
                 self._get_int('max_missing_depth_landmarks'),
             ),
         )
-        self.saturation_zone = max(1e-6, self._get_float('saturation_zone'))
-        self.dead_zone = max(0.0, self._get_float('dead_zone'))
+        self.show_control_overlay = self._get_bool('show_control_overlay')
+        self.control_overlay = None
+        if self.show_control_overlay:
+            self.control_overlay = ControlOverlayConfig(
+                dead_zone=max(0.0, self._get_float('overlay_dead_zone')),
+                saturation_zone=max(
+                    1e-6,
+                    self._get_float('overlay_saturation_zone'),
+                ),
+                normalization_mode=parse_overlay_normalization_mode(
+                    self._get_str('overlay_normalization_mode'),
+                    self.get_logger().warning,
+                ),
+            )
         self.tracked_landmark_index = self._get_int('tracked_landmark_index')
         self.auto_reference_on_first_detection = self._get_bool(
             'auto_reference_on_first_detection'
@@ -202,7 +219,6 @@ class OakHandLandmarksNode(Node):
             if self.visualize
             else None
         )
-        self.show_control_zones = self._get_bool('show_control_zones')
         self.enable_one_euro_filter = self._get_bool('enable_one_euro_filter')
 
         initial_reference_values = (
@@ -301,9 +317,19 @@ class OakHandLandmarksNode(Node):
             f'radius={self.depth_config.sample_radius_px}px\n'
             f'  reset_reference  = {self.reset_reference_topic} '
             f'(auto_first={self.auto_reference_on_first_detection})\n'
+            f'  control_overlay  = {self.show_control_overlay}\n'
             f'  one_euro_filter  = {self.enable_one_euro_filter}\n'
             f'  visualize        = {self.visualize}'
         )
+        if self.control_overlay is not None:
+            self.get_logger().info(
+                'Control overlay enabled with '
+                f'mode={self.control_overlay.normalization_mode.value}, '
+                f'dead_zone={self.control_overlay.dead_zone:.3f}m, '
+                f'saturation_zone='
+                f'{self.control_overlay.effective_saturation_zone:.3f}m, '
+                f'landmark_index={self.tracked_landmark_index}'
+            )
         if self.enable_one_euro_filter:
             self.get_logger().info(
                 'One Euro filter enabled with '
@@ -754,27 +780,28 @@ class OakHandLandmarksNode(Node):
         if not projection.valid:
             return None, None, projection.missing_depth_count
 
-        metric_hand = []
-        image_hand = []
-        for index, (metric_point, image_point) in enumerate(
-            zip(projection.metric_points, projection.image_points)
-        ):
-            if self.landmark_filters is not None:
-                metric_point = self.landmark_filters.filter_point(
+        if self.landmark_filters is not None:
+            def filter_metric_point(index, point):
+                return self.landmark_filters.filter_point(
                     hand_idx,
                     index,
-                    metric_point,
+                    point,
                     ts_sec,
                 )
+            transform = filter_metric_point
+        else:
+            transform = None
 
-            metric_hand.append(metric_point)
-            image_hand.append(
-                Point32(
-                    x=float(image_point.x),
-                    y=float(image_point.y),
-                    z=float(metric_point.z),
-                )
-            )
+        prepared_hand = prepare_metric_hand_for_output(
+            projection.metric_points,
+            self.depth_projector.intrinsics,
+            self.rgb_resolution[0],
+            self.rgb_resolution[1],
+            transform,
+        )
+        if prepared_hand is None:
+            return None, None, projection.missing_depth_count
+        metric_hand, image_hand = prepared_hand
 
         return metric_hand, image_hand, projection.missing_depth_count
 
@@ -853,10 +880,13 @@ class OakHandLandmarksNode(Node):
             reference_image=reference_snapshot.image_position,
             reference_initialized=reference_snapshot.initialized,
             tracked_landmark_index=self.tracked_landmark_index,
-            show_control_zones=self.show_control_zones,
-            dead_zone=self.dead_zone,
-            saturation_zone=self.saturation_zone,
-            focal_length_px=self.depth_projector.intrinsics.fx,
+            control_overlay=self.control_overlay,
+            camera_intrinsics=(
+                self.depth_projector.intrinsics.fx,
+                self.depth_projector.intrinsics.fy,
+                self.depth_projector.intrinsics.cx,
+                self.depth_projector.intrinsics.cy,
+            ),
         )
         if exit_requested:
             self.get_logger().info('Visualization window closed by user.')

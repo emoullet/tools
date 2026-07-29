@@ -31,8 +31,6 @@ oak_hand_landmarks_node:
     missing_depth_strategy: "reuse_last"  # Options: skip_frame, reuse_last, hand_median
     max_missing_depth_landmarks: 8
 
-    saturation_zone: 0.4
-    dead_zone: 0.05
     tracked_landmark_index: 0
     initial_reference: [0.0, 0.0, 0.6]
     auto_reference_on_first_detection: true
@@ -46,4 +44,7 @@ oak_hand_landmarks_node:
 
     visualize: true
     window_name: "3D Hand Landmarks OAK"
-    show_control_zones: true
+    show_control_overlay: false
+    overlay_dead_zone: 0.05
+    overlay_saturation_zone: 0.3
+    overlay_normalization_mode: "vector"  # Options: "axis", "vector"

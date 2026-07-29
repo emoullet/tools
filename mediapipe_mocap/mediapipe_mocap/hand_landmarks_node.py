@@ -55,7 +55,11 @@ from mediapipe_mocap.reference import (
     ResetRequestResult,
 )
 from mediapipe_mocap.ros_qos import latest_reliable_qos
-from mediapipe_mocap.viewer import HandLandmarksViewer
+from mediapipe_mocap.viewer import (
+    ControlOverlayConfig,
+    HandLandmarksViewer,
+    parse_overlay_normalization_mode,
+)
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, PointCloud
@@ -121,9 +125,10 @@ class HandLandmarksNode(Node):
                 ('reset_reference_topic', '/reset_reference'),
                 ('reset_reference_cooldown_sec', 0.25),
                 ('initial_reference', [0.5, 0.5, 0.5]),
-                ('show_control_zones', True),
-                ('dead_zone', 0.05),
-                ('saturation_zone', 0.3),
+                ('show_control_overlay', False),
+                ('overlay_dead_zone', 0.05),
+                ('overlay_saturation_zone', 0.3),
+                ('overlay_normalization_mode', 'vector'),
                 ('tracked_landmark_index', 0),
             ]
         )
@@ -200,17 +205,35 @@ class HandLandmarksNode(Node):
             initial_position=initial_reference,
             cooldown_sec=self.reset_reference_cooldown_sec,
         )
-        self.show_control_zones = (
-            self.get_parameter('show_control_zones').get_parameter_value().bool_value
+        self.show_control_overlay = (
+            self.get_parameter('show_control_overlay').get_parameter_value().bool_value
         )
-        self.dead_zone = max(
-            0.0,
-            float(self.get_parameter('dead_zone').get_parameter_value().double_value),
-        )
-        self.saturation_zone = max(
-            1e-6,
-            float(self.get_parameter('saturation_zone').get_parameter_value().double_value),
-        )
+        self.control_overlay = None
+        if self.show_control_overlay:
+            self.control_overlay = ControlOverlayConfig(
+                dead_zone=max(
+                    0.0,
+                    float(
+                        self.get_parameter('overlay_dead_zone')
+                        .get_parameter_value()
+                        .double_value
+                    ),
+                ),
+                saturation_zone=max(
+                    1e-6,
+                    float(
+                        self.get_parameter('overlay_saturation_zone')
+                        .get_parameter_value()
+                        .double_value
+                    ),
+                ),
+                normalization_mode=parse_overlay_normalization_mode(
+                    self.get_parameter('overlay_normalization_mode')
+                    .get_parameter_value()
+                    .string_value,
+                    self.get_logger().warning,
+                ),
+            )
         self.tracked_landmark_index = int(
             self.get_parameter('tracked_landmark_index').get_parameter_value().integer_value
         )
@@ -291,12 +314,19 @@ class HandLandmarksNode(Node):
             f'(cooldown={self.reset_reference_cooldown_sec:.3f}s)\n'
             f'  initial_ref      = ({initial_reference[0]:.3f}, '
             f'{initial_reference[1]:.3f}, {initial_reference[2]:.3f})\n'
-            f'  control_zones    = {self.show_control_zones} '
-            f'(dead={self.dead_zone:.3f}, sat={self.saturation_zone:.3f}, '
-            f'lm_idx={self.tracked_landmark_index})\n'
+            f'  control_overlay  = {self.show_control_overlay}\n'
             f'  one_euro_filter  = {self.enable_one_euro_filter}\n'
             f'  visualize        = {self.visualize}'
         )
+        if self.control_overlay is not None:
+            self.get_logger().info(
+                'Control overlay enabled with '
+                f'mode={self.control_overlay.normalization_mode.value}, '
+                f'dead_zone={self.control_overlay.dead_zone:.3f}, '
+                f'saturation_zone='
+                f'{self.control_overlay.effective_saturation_zone:.3f}, '
+                f'landmark_index={self.tracked_landmark_index}'
+            )
 
         if self.enable_one_euro_filter:
             self.get_logger().info(
@@ -503,9 +533,12 @@ class HandLandmarksNode(Node):
                 mediapipe_time_sec=t_mediapipe,
                 reference_xyz=reference,
                 tracked_landmark_index=self.tracked_landmark_index,
-                show_control_zones=self.show_control_zones,
-                dead_zone=self.dead_zone,
-                saturation_zone=self.saturation_zone,
+                control_overlay=self.control_overlay,
+                displacement_scale=(
+                    self.frame_normalization_factor[0],
+                    self.frame_normalization_factor[1],
+                    0.0,
+                ),
             )
             if exit_requested:
                 self.get_logger().info('Visualization window closed by user.')
