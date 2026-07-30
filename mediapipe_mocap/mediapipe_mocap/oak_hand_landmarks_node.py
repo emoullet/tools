@@ -591,7 +591,7 @@ class OakHandLandmarksNode(Node):
             header=header,
             ts_sec=ts_sec,
             depth_mm=depth_mm,
-            cv_rgb_for_visualization=cv_bgr if self.visualize else None,
+            cv_bgr_for_visualization=cv_bgr if self.visualize else None,
             t_mediapipe=detection.duration_sec,
         )
 
@@ -652,7 +652,7 @@ class OakHandLandmarksNode(Node):
         header,
         ts_sec: float,
         depth_mm,
-        cv_rgb_for_visualization,
+        cv_bgr_for_visualization,
         t_mediapipe,
     ):
         """
@@ -669,40 +669,30 @@ class OakHandLandmarksNode(Node):
             their sample time when filtering is enabled.
         depth_mm : numpy.ndarray
             Depth image aligned to the RGB frame, with values in millimeters.
-        cv_rgb_for_visualization : numpy.ndarray | None
-            Optional OpenCV color frame used for overlay drawing. ``None`` skips
-            visualization while still allowing publishing.
+        cv_bgr_for_visualization : numpy.ndarray | None
+            Optional BGR frame used for OpenCV overlay drawing. ``None`` skips
+            visualization while still allowing publication.
         t_mediapipe : float
             MediaPipe processing duration in seconds for display and debug output.
 
         """
-        processed_metric_hands = []
-        processed_image_hands = []
+        metric_hand = None
+        image_hand = None
         missing_depth_count = 0
-
         if result.hand_landmarks:
-            hands_to_process = (
-                result.hand_landmarks
-                if self.visualize
-                else result.hand_landmarks[:1]
-            )
-            for hand_idx, hand_landmarks in enumerate(hands_to_process):
-                metric_hand, image_hand, missing_count = self._build_3d_hand_landmarks(
-                    hand_landmarks,
+            metric_hand, image_hand, missing_depth_count = (
+                self._build_3d_hand_landmarks(
+                    result.hand_landmarks[0],
                     depth_mm,
                     ts_sec,
-                    hand_idx,
+                    0,
                 )
-                missing_depth_count += missing_count
-                if metric_hand is None:
-                    continue
-                processed_metric_hands.append(metric_hand)
-                processed_image_hands.append(image_hand)
+            )
 
-        if processed_metric_hands:
+        if metric_hand is not None and image_hand is not None:
             self._update_reference_if_needed(
-                processed_metric_hands[0],
-                processed_image_hands[0],
+                metric_hand,
+                image_hand,
             )
             reference_snapshot = self.reference_state.snapshot()
             reference = reference_snapshot.position
@@ -710,7 +700,7 @@ class OakHandLandmarksNode(Node):
 
             if reference_initialized:
                 relative_landmarks = relative_points(
-                    processed_metric_hands[0],
+                    metric_hand,
                     reference,
                     (1.0, 1.0, 1.0),
                 )
@@ -726,12 +716,13 @@ class OakHandLandmarksNode(Node):
 
         if (
             self.visualize
-            and cv_rgb_for_visualization is not None
+            and cv_bgr_for_visualization is not None
         ):
+            image_hands = [image_hand] if image_hand is not None else []
             self._visualize(
-                cv_rgb_for_visualization,
-                processed_image_hands,
-                processed_metric_hands[0] if processed_metric_hands else None,
+                cv_bgr_for_visualization,
+                image_hands,
+                metric_hand,
                 missing_depth_count,
                 t_mediapipe,
             )
@@ -841,7 +832,7 @@ class OakHandLandmarksNode(Node):
 
     def _visualize(
         self,
-        cv_rgb,
+        cv_bgr,
         image_hands,
         primary_metric_hand,
         missing_depth_count,
@@ -852,9 +843,8 @@ class OakHandLandmarksNode(Node):
 
         Parameters
         ----------
-        cv_rgb : numpy.ndarray
-            OpenCV color image to annotate. The caller passes the frame in display
-            color order expected by OpenCV.
+        cv_bgr : numpy.ndarray
+            BGR image to annotate in OpenCV display color order.
         image_hands : Sequence[Sequence[geometry_msgs.msg.Point32]]
             Detected hands in normalized image coordinates, used to draw landmark
             connections.
@@ -871,7 +861,7 @@ class OakHandLandmarksNode(Node):
         reference_snapshot = self.reference_state.snapshot()
 
         exit_requested = self.viewer.show_3d(
-            cv_rgb,
+            cv_bgr,
             image_hands,
             primary_metric_hand=primary_metric_hand,
             missing_depth_count=missing_depth_count,
