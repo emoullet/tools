@@ -1,4 +1,4 @@
-# Copyright 2026 Etienne Moullet
+# Copyright 2026 ISIR-EXTENDER
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -10,7 +10,7 @@
 #   notice, this list of conditions and the following disclaimer in the
 #   documentation and/or other materials provided with the distribution.
 #
-# * Neither the name of the Etienne Moullet nor the names of its
+# * Neither the name of the ISIR-EXTENDER nor the names of its
 #   contributors may be used to endorse or promote products derived from
 #   this software without specific prior written permission.
 #
@@ -49,6 +49,9 @@ from mediapipe_mocap.mediapipe_runtime import (
     PeriodicPerformanceTracker,
     timestamp_ms_from_header,
     timestamp_sec_from_header,
+)
+from mediapipe_mocap.parameter_descriptors import (
+    hand_landmarks_parameter_declarations,
 )
 from mediapipe_mocap.reference import (
     ReferenceState,
@@ -105,32 +108,7 @@ class HandLandmarksNode(Node):
 
         self.declare_parameters(
             namespace='',
-            parameters=[
-                ('image_topic', '/camera/color/image_raw'),
-                ('landmarks_topic', '/hand_landmarks'),
-                ('model_path', default_model_path),
-                ('num_hands', 1),
-                ('min_hand_detection_confidence', 0.5),
-                ('min_hand_presence_confidence', 0.5),
-                ('min_tracking_confidence', 0.5),
-                ('delegate', 'AUTO'),
-                ('selfie_mode', False),
-                ('enable_one_euro_filter', True),
-                ('one_euro_frequency', 30.0),
-                ('one_euro_mincutoff', 1.0),
-                ('one_euro_beta', 0.1),
-                ('one_euro_derivative_cutoff', 1.0),
-                ('visualize', False),
-                ('window_name', 'Hand Landmarks (Node)'),
-                ('reset_reference_topic', '/reset_reference'),
-                ('reset_reference_cooldown_sec', 0.25),
-                ('initial_reference', [0.5, 0.5, 0.5]),
-                ('show_control_overlay', False),
-                ('overlay_dead_zone', 0.05),
-                ('overlay_saturation_zone', 0.3),
-                ('overlay_normalization_mode', 'vector'),
-                ('tracked_landmark_index', 0),
-            ]
+            parameters=hand_landmarks_parameter_declarations(default_model_path),
         )
 
         # Retrieve parameters

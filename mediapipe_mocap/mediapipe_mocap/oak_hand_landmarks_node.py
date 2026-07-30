@@ -1,4 +1,4 @@
-# Copyright 2026 Etienne Moullet
+# Copyright 2026 ISIR-EXTENDER
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -10,7 +10,7 @@
 #   notice, this list of conditions and the following disclaimer in the
 #   documentation and/or other materials provided with the distribution.
 #
-# * Neither the name of the Etienne Moullet nor the names of its
+# * Neither the name of the ISIR-EXTENDER nor the names of its
 #   contributors may be used to endorse or promote products derived from
 #   this software without specific prior written permission.
 #
@@ -62,6 +62,9 @@ from mediapipe_mocap.oak_depth import (
     parse_missing_depth_strategy,
     prepare_metric_hand_for_output,
 )
+from mediapipe_mocap.parameter_descriptors import (
+    oak_hand_landmarks_parameter_declarations,
+)
 from mediapipe_mocap.reference import (
     ReferenceState,
     ResetRequestResult,
@@ -109,51 +112,9 @@ class OakHandLandmarksNode(Node):
 
         self.declare_parameters(
             namespace='',
-            parameters=[
-                ('landmarks_topic', '/hand_landmarks'),
-                ('model_path', default_model_path),
-                ('num_hands', 1),
-                ('min_hand_detection_confidence', 0.5),
-                ('min_hand_presence_confidence', 0.5),
-                ('min_tracking_confidence', 0.5),
-                ('delegate', 'AUTO'),
-                ('camera_frame_id', 'oak_rgb_camera_optical_frame'),
-                ('rgb_width', 640),
-                ('rgb_height', 400),
-                ('fps', 50.0),
-                ('rgb_socket', 'CAM_A'),
-                ('left_socket', 'CAM_B'),
-                ('right_socket', 'CAM_C'),
-                ('stereo_preset', 'FAST_DENSITY'),
-                ('stereo_left_right_check', True),
-                ('stereo_subpixel', False),
-                ('stereo_extended_disparity', False),
-                ('stereo_rectify_edge_fill_color', 0),
-                ('sync_threshold_ms', 15.0),
-                ('sync_attempts', -1),
-                ('sync_run_on_host', True),
-                ('depth_sample_radius_px', 2),
-                ('min_depth_m', 0.12),
-                ('max_depth_m', 3.0),
-                ('depth_percentile', 50.0),
-                ('missing_depth_strategy', 'reuse_last'),
-                ('max_missing_depth_landmarks', 8),
-                ('show_control_overlay', False),
-                ('overlay_dead_zone', 0.05),
-                ('overlay_saturation_zone', 0.3),
-                ('overlay_normalization_mode', 'vector'),
-                ('tracked_landmark_index', 0),
-                ('initial_reference', [0.0, 0.0, 0.6]),
-                ('auto_reference_on_first_detection', True),
-                ('reset_reference_topic', '/reset_reference'),
-                ('reset_reference_cooldown_sec', 0.25),
-                ('enable_one_euro_filter', True),
-                ('one_euro_mincutoff', 1.0),
-                ('one_euro_beta', 0.1),
-                ('one_euro_derivative_cutoff', 1.0),
-                ('visualize', False),
-                ('window_name', '3D Hand Landmarks OAK'),
-            ],
+            parameters=oak_hand_landmarks_parameter_declarations(
+                default_model_path
+            ),
         )
 
         self.landmarks_topic = self._get_str('landmarks_topic')
