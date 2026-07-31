@@ -1,198 +1,76 @@
 # mediapipe_mocap
 
-ROS 2 package for MediaPipe hand tracking from RGB images and OAK-D S2 RGBD
-streams.
+ROS 2 producers for MediaPipe hand tracking from RGB images and OAK-D S2
+RGBD streams.
 
-## Overview
+## Producers
 
-This package provides two hand tracking workflows:
+The package installs two executables:
 
-- `hand_landmarks_node` subscribes to RGB images, runs MediaPipe
-  HandLandmarker, and publishes 2D reference-relative hand-control points.
-- `oak_hand_landmarks_node` captures OAK-D S2 RGB and stereo depth
-  directly with DepthAI v3, back-projects MediaPipe landmarks to metric 3D,
-  and publishes reference-relative metric points.
+| Executable | Input | Published coordinates |
+|------------|-------|-----------------------|
+| `hand_landmarks_node` | `sensor_msgs/Image` | Reference-relative, aspect-corrected normalized image coordinates |
+| `oak_hand_landmarks_node` | OAK RGB and aligned stereo depth captured with DepthAI v3 | Reference-relative RGB optical-camera coordinates in meters |
 
-## Features
+Both producers run MediaPipe Hand Landmarker synchronously in `VIDEO` mode.
+`running_mode` is intentionally not a ROS parameter. Source timestamps are
+made strictly increasing before each `detect_for_video` call.
 
-- **Real-time hand tracking** using MediaPipe Tasks API
-- **OAK-D S2 RGBD 3D hand tracking** using DepthAI v3 aligned stereo depth
-- **Configurable detection thresholds** for detection, presence, and tracking confidence
-- **FPS measurement** to monitor processing performance
-- **Bounded image latency** using reliable, keep-last depth-1 subscription QoS
-- **Built-in viewer** to overlay landmarks with MediaPipe drawing styles
+## Quick starts
 
-## Published Topics
+Build and source the workspace first. See [Environment](#environment) for the
+validated Python setup.
 
-- `/hand_landmarks` (`sensor_msgs/PointCloud`)
-  - 2D node: 21 reference-relative points. `point.x` and `point.y` are
-    aspect-corrected normalized image offsets, and `point.z` is `0`. The
-    producer does not apply dead-zone removal or saturation.
-  - OAK node: 21 reference-relative RGB-camera points in meters. The producer
-    does not apply dead-zone removal or saturation.
+### RGB with a USB camera
 
-Landmark publishers and reset subscriptions use ROS queue depth 10 with the
-default reliable/volatile QoS policies.
+The complete USB-camera pipeline starts `usb_cam` and
+`hand_landmarks_node`:
 
-## Subscribed Topics
+```bash
+ros2 launch mediapipe_mocap usb_cam_hand_landmarks_launch.py \
+  video_device:=/dev/video0
+```
 
-- `/camera/color/image_raw` (`sensor_msgs/Image`) - Input RGB images for the
-  2D node, subscribed with reliable, volatile, keep-last depth-1 QoS.
-- `/reset_reference` (`std_msgs/Bool`) - The shared reset topic for both
-  producers. A false-to-true transition queues recentering on the next valid
-  detected hand, subject to the cooldown.
+The camera defaults to 640×480 at 30 FPS. The detector consumes
+`/camera/color/image_raw`, and `selfie_mode=true` mirrors the image inside the
+detector without changing the camera publisher.
 
-## 2D node parameters
-
-The table shows the built-in defaults used when the executable is run without
-a parameter file.
-
-| Parameter | Type | Built-in default | Description |
-|-----------|------|---------|-------------|
-| `image_topic` | string | `/camera/color/image_raw` | Input image topic |
-| `landmarks_topic` | string | `/hand_landmarks` | Output landmarks topic |
-| `model_path` | string | `<auto-resolved>` | Path to MediaPipe model file (auto-resolved to `<package_share>/models/hand_landmarker.task`) |
-| `num_hands` | int | 1 | Maximum number of hands to detect |
-| `min_hand_detection_confidence` | double | 0.5 | Minimum confidence for hand detection |
-| `min_hand_presence_confidence` | double | 0.5 | Minimum confidence for hand presence |
-| `min_tracking_confidence` | double | 0.5 | Minimum tracking confidence |
-| `delegate` | string | `AUTO` | Execution policy: `AUTO`, `CPU`, or `GPU`; `AUTO` prefers GPU on native Linux and retries CPU if GPU initialization fails |
-| `enable_one_euro_filter` | bool | true | Enable One Euro smoothing on each landmark coordinate |
-| `one_euro_frequency` | double | 30.0 | Expected landmark update frequency in Hz |
-| `one_euro_mincutoff` | double | 1.0 | Minimum cutoff frequency (lower = smoother) |
-| `one_euro_beta` | double | 0.1 | Speed coefficient (higher = more responsive) |
-| `one_euro_derivative_cutoff` | double | 1.0 | Derivative low-pass cutoff frequency in Hz |
-| `visualize` | bool | false | Show a local OpenCV window with landmarks overlay |
-| `window_name` | string | `Hand Landmarks (Node)` | Window title when `visualize` is enabled |
-| `reset_reference_topic` | string | `/reset_reference` | Topic used to recenter the hand reference |
-| `reset_reference_cooldown_sec` | double | 0.25 | Minimum time between accepted reference resets |
-| `initial_reference` | double array | `[0.5, 0.5, 0.5]` | Initial reference point in normalized image coordinates |
-| `show_control_overlay` | bool | false | Draw the optional display-only control preview |
-| `overlay_dead_zone` | double | 0.05 | Display-only dead-zone radius; ignored when the control overlay is disabled |
-| `overlay_saturation_zone` | double | 0.3 | Display-only saturation boundary; ignored when the control overlay is disabled |
-| `overlay_normalization_mode` | string | `vector` | Display-only `axis` or `vector` normalization preview; invalid values warn and fall back to `vector` |
-| `tracked_landmark_index` | int | 0 | Landmark used for reference reset and control-zone feedback |
-
-The built-in defaults and shipped `config/hand_landmarks_node.yaml` both enable
-One Euro filtering with `frequency=30.0`, `mincutoff=1.0`, `beta=0.1`, and
-`derivative_cutoff=1.0`. The shipped YAML enables visualization, while the
-standalone launch now leaves visualization and overlay values to that YAML.
-The USB-camera launch overrides only its integration-specific settings, such
-as `selfie_mode=true`.
-
-## Usage
-
-### Prerequisites
-
-1. Install MediaPipe and DepthAI in a virtual environment. These Python
-   packages are intentionally installed with pip in `.venv_mediapipe`, not
-   through rosdep package dependencies.
-
-   ```bash
-   # Install venv support (Ubuntu 24.04)
-   sudo apt install python3.12-venv
-
-   # Create venv in workspace root (inherits ROS system packages)
-   cd ~/dev/extender_workspace
-   python3 -m venv .venv_mediapipe --system-site-packages
-   source .venv_mediapipe/bin/activate
-
-   # Upgrade pip only (do NOT upgrade setuptools/wheel to avoid colcon conflicts)
-   python -m pip install --upgrade pip
-
-   # Install the validated Jazzy/Python 3.12 versions.
-   python -m pip install \
-     --constraint src/tools/mediapipe_mocap/constraints-jazzy.txt \
-     numpy opencv-contrib-python mediapipe depthai
-
-   # Verify
-   python -c "import numpy, cv2; print(numpy.__version__, cv2.__version__)"
-   python -c "import mediapipe, depthai; print(mediapipe.__version__, depthai.__version__)"
-
-   # Check whether your OAK camera is detected with oak-viewer:
-   # https://docs.luxonis.com/software-v3/depthai/tools/oak-viewer/
-   # Prefer the USB port that reports the highest USB speed.
-   ```
-
-   Do not upgrade this environment to NumPy 2.x. ROS Jazzy's system
-   Matplotlib/OpenCV extensions are built against NumPy 1.x, and mixing them
-   with NumPy 2.x causes an ABI import failure. The constraints file pins the
-   validated NumPy 1.26.4 baseline.
-
-   Activating this pinned environment remains recommended. At startup the
-   nodes prefer the active virtual environment and otherwise search up to four
-   parent directories for `.venv_mediapipe`, adding its versioned
-   `site-packages` directory to `sys.path`.
-
-2. Install the ROS 2 USB camera driver:
-
-   ```bash
-   sudo apt update
-   sudo apt install ros-$ROS_DISTRO-usb-cam
-   ```
-
-   Verify that the package is available:
-
-   ```bash
-   ros2 pkg executables usb_cam
-   ```
-
-   The output should include `usb_cam usb_cam_node_exe`.
-
-3. Rebuild the package **with the venv active**:
-
-   ```bash
-   source .venv_mediapipe/bin/activate
-   colcon build --packages-up-to mediapipe_mocap --symlink-install
-   ```
-
-4. The MediaPipe hand landmarker model is **provided by default** in the
-   `models/` folder of this package and automatically resolved at runtime.
-
-### Running the Node
-
-Use the launch file (recommended):
+To use an existing RGB image topic instead:
 
 ```bash
 ros2 launch mediapipe_mocap hand_landmarks_launch.py
 ```
 
-Or run directly (model path is auto-resolved):
+Override the topic in a custom parameter file, or run the executable directly:
 
 ```bash
-ros2 run mediapipe_mocap hand_landmarks_node
+ros2 run mediapipe_mocap hand_landmarks_node --ros-args \
+  --params-file "$(ros2 pkg prefix mediapipe_mocap)/share/mediapipe_mocap/config/hand_landmarks_node.yaml" \
+  -p image_topic:=/my/camera/image_raw
 ```
 
-### Running the OAK-D S2 RGBD 3D Node
+The shipped RGB YAML enables the OpenCV viewer and its display-only control
+overlay. Disable either without changing publication:
 
-The OAK node captures RGB and stereo depth directly with DepthAI v3, aligns depth
-to the RGB frame, runs MediaPipe HandLandmarker on RGB, back-projects each
-landmark with the RGB intrinsics, and publishes 21 reference-relative 3D points.
-Those points remain metric RGB-camera offsets in meters. Dead-zone and
-saturation normalization belong to consumers; the optional producer overlay is
-display-only.
+```bash
+ros2 launch mediapipe_mocap hand_landmarks_launch.py \
+  visualize:=false \
+  show_control_overlay:=false
+```
 
-Use the standalone launch file (recommended):
+### OAK-D S2
+
+The OAK producer owns capture, synchronization, aligned depth, MediaPipe
+detection, and back-projection:
 
 ```bash
 ros2 launch mediapipe_mocap oak_hand_landmarks_launch.py
 ```
 
-Or run the executable directly with the OAK config:
+The shipped OAK configuration requests 640×400 RGB and aligned depth at
+50 FPS. Its viewer is enabled and the optional control overlay is disabled.
 
-```bash
-ros2 run mediapipe_mocap oak_hand_landmarks_node \
-  --ros-args \
-  --params-file $(ros2 pkg prefix mediapipe_mocap)/share/mediapipe_mocap/config/oak_hand_landmarks_node.yaml
-```
-
-For the complete OAK hand joystick pipeline, launch it from `hand_joystick_interfaces`:
-
-```bash
-ros2 launch hand_joystick_interfaces oak_hand_joystick_launch.py
-```
-
-Useful overrides:
+Common launch overrides are:
 
 ```bash
 ros2 launch mediapipe_mocap oak_hand_landmarks_launch.py \
@@ -201,191 +79,322 @@ ros2 launch mediapipe_mocap oak_hand_landmarks_launch.py \
   rgb_height:=400 \
   visualize:=true \
   show_control_overlay:=true \
-  overlay_saturation_zone:=0.4 \
+  overlay_normalization_mode:=vector \
   landmark_index:=0
 ```
 
-Key OAK parameters:
+For the producer and joystick consumer together:
+
+```bash
+ros2 launch hand_joystick_interfaces oak_hand_joystick_launch.py
+```
+
+## Published data contract
+
+`/hand_landmarks` remains a `sensor_msgs/msg/PointCloud`.
+
+For every published cloud:
+
+- `points` contains exactly 21 points in MediaPipe landmark order, indices
+  0–20, from the first detected hand.
+- The points come from the post-filter pipeline state: One Euro-filtered when
+  enabled, or converted without smoothing when disabled.
+- No dead-zone, saturation, control normalization, axis mapping, or sign
+  change is applied.
+- No cloud is published when a complete valid hand is unavailable. Consumers
+  are responsible for watchdog behavior when input stops.
+
+### RGB coordinates
+
+The RGB producer publishes planar offsets:
+
+```text
+x = (landmark_x - reference_x) * width  / min(width, height)
+y = (landmark_y - reference_y) * height / min(width, height)
+z = 0
+```
+
+This preserves equal geometric scale on both axes for non-square images.
+MediaPipe's relative landmark depth is not published by the RGB producer.
+The cloud copies the complete header of the input `Image`, including its stamp
+and `frame_id`.
+
+### OAK coordinates
+
+The OAK producer samples aligned depth near each MediaPipe landmark and
+back-projects it through the RGB intrinsics. A valid hand is a complete
+21-point metric result after applying the configured missing-depth policy.
+The published values are:
+
+```text
+point = filtered RGB-camera metric point - metric reference
+```
+
+All three coordinates are in meters. The cloud is stamped when the synchronized
+RGBD frame is processed and uses `camera_frame_id`, which defaults to
+`oak_rgb_camera_optical_frame`.
+
+If the hand cannot produce a complete metric result—for example because too
+many depth samples are invalid—no cloud is published, the filters are reset,
+and the next valid hand starts a new filter sequence.
+
+## Processing and reference contract
+
+The canonical per-frame state is:
+
+```text
+MediaPipe landmarks
+        ↓
+coordinate conversion / OAK back-projection
+        ↓
+One Euro filtering (when enabled)
+        ↓
+reference update ──→ relative PointCloud
+        └──────────→ viewer and optional control overlay
+```
+
+Publication and visualization therefore use the same post-filter landmark
+state. Raw MediaPipe coordinates are never substituted in the viewer when
+filtering is enabled. For OAK visualization, the filtered metric points are
+reprojected through the RGB intrinsics; an invalid reprojection skips the hand
+instead of falling back to raw image coordinates. Rendering does not modify
+the published values.
+
+The RGB reference starts at `initial_reference`, `[0.5, 0.5, 0.5]` by
+default. The OAK producer defaults to
+`auto_reference_on_first_detection=true`, so its reference is initialized
+from `tracked_landmark_index` on the first complete hand with valid metric
+depth. Until that happens, it publishes no cloud.
+
+Both producers subscribe to `/reset_reference`. A `false`-to-`true`
+`std_msgs/Bool` transition requests recentering on the next valid hand. Further
+requests inside `reset_reference_cooldown_sec` are ignored. The current
+reference is retained when a hand is temporarily lost.
+
+For a manual reset:
+
+```bash
+ros2 topic pub --once /reset_reference std_msgs/msg/Bool "{data: false}"
+ros2 topic pub --once /reset_reference std_msgs/msg/Bool "{data: true}"
+```
+
+## Topics and QoS
+
+| Direction | Topic default | Type | QoS |
+|-----------|---------------|------|-----|
+| RGB input | `/camera/color/image_raw` | `sensor_msgs/msg/Image` | Reliable, volatile, keep-last depth 1 |
+| Output | `/hand_landmarks` | `sensor_msgs/msg/PointCloud` | Reliable, volatile, keep-last depth 10 |
+| Reset input | `/reset_reference` | `std_msgs/msg/Bool` | Reliable, volatile, keep-last depth 10 |
+
+The depth-1 RGB subscription bounds queued image latency. OAK images and depth
+are exchanged internally through the DepthAI pipeline rather than ROS topics.
+
+## Filtering and visualization
+
+One Euro filtering is enabled by default. Filtering is applied independently
+to every axis of all 21 points and occurs exactly once. If filtering is
+disabled, the converted but unfiltered points become the canonical state used
+by reference, publisher, and viewer.
+
+The RGB filter has a nominal `one_euro_frequency` of 30 Hz. The OAK filter uses
+the configured camera `fps`; it has no separate frequency parameter. Both use
+frame timestamps for actual sample intervals.
+
+The viewer shows the filtered hand, reference marker, MediaPipe processing
+time, and FPS. Timing and FPS are averaged over 0.5-second windows to keep the
+display readable. OAK depth validity remains a current-frame status.
+
+`show_control_overlay` adds a display-only preview based on
+`tracked_landmark_index`:
+
+- `vector` uses circular/spherical dead and saturation boundaries and
+  preserves direction during normalization.
+- `axis` uses rectangular/cuboid boundaries and normalizes each component
+  independently.
+
+The overlay reports filtered displacement, normalized preview, mode, and
+`DEAD`, `ACTIVE`, or `SATURATED` state. It deliberately excludes consumer axis
+mapping and sign changes. Its `overlay_*` parameters are ignored when
+`show_control_overlay=false`, and they never affect `/hand_landmarks`.
+
+## Parameters
+
+The tables below list executable built-in defaults. The shipped YAML files
+override selected viewer defaults as summarized in
+[Configuration defaults](#configuration-defaults).
+
+### Common MediaPipe parameters
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `rgb_width` | `640` | RGB/depth output width used for MediaPipe and depth sampling |
-| `rgb_height` | `400` | RGB/depth output height used for MediaPipe and depth sampling |
-| `fps` | `50.0` | OAK camera FPS |
-| `delegate` | `AUTO` | MediaPipe execution policy; `AUTO` provides GPU-to-CPU fallback on native Linux |
-| `stereo_preset` | `FAST_DENSITY` | DepthAI StereoDepth preset |
-| `depth_sample_radius_px` | `2` | Median/percentile depth sampling window radius around each landmark |
-| `show_control_overlay` | `false` | Show a display-only preview of control normalization |
-| `overlay_saturation_zone` | `0.3` | Display-only metric saturation boundary; ignored when the overlay is disabled |
-| `overlay_dead_zone` | `0.05` | Display-only metric dead-zone boundary; ignored when the overlay is disabled |
+| `landmarks_topic` | `/hand_landmarks` | Output `PointCloud` topic |
+| `model_path` | bundled model | Hand Landmarker task path; an empty string selects the bundled model |
+| `num_hands` | `1` | Maximum hands detected; only the first is published |
+| `min_hand_detection_confidence` | `0.5` | Palm-detection confidence threshold |
+| `min_hand_presence_confidence` | `0.5` | Hand-presence confidence threshold |
+| `min_tracking_confidence` | `0.5` | Landmark-tracking confidence threshold |
+| `delegate` | `AUTO` | `AUTO`, `CPU`, or `GPU` |
+| `enable_one_euro_filter` | `true` | Filter before reference, publication, and display |
+| `one_euro_mincutoff` | `1.0` Hz | One Euro minimum cutoff |
+| `one_euro_beta` | `0.1` | One Euro speed coefficient |
+| `one_euro_derivative_cutoff` | `1.0` Hz | One Euro derivative cutoff |
+| `visualize` | `false` | Open the producer diagnostics window |
+| `window_name` | node-specific | OpenCV window title |
+| `show_control_overlay` | `false` | Add the display-only control preview |
+| `overlay_dead_zone` | `0.05` | Display-only dead-zone boundary |
+| `overlay_saturation_zone` | `0.3` | Display-only saturation boundary |
 | `overlay_normalization_mode` | `vector` | Display-only `axis` or `vector` preview |
-| `auto_reference_on_first_detection` | `true` | Use the first valid tracked landmark as the 3D reference |
-| `reset_reference_topic` | `/reset_reference` | Reset topic shared by both producers |
-| `enable_one_euro_filter` | `true` | Enable shared One Euro filtering |
-| `one_euro_mincutoff` | `1.0` | Minimum cutoff frequency in Hz |
-| `one_euro_beta` | `0.1` | Speed coefficient |
-| `one_euro_derivative_cutoff` | `1.0` | Derivative low-pass cutoff frequency in Hz |
-| `visualize` | `true` | Show a local OpenCV window when loading the shipped OAK YAML |
+| `tracked_landmark_index` | `0` | Landmark used for reference reset and overlay |
+| `reset_reference_topic` | `/reset_reference` | Rising-edge reset topic |
+| `reset_reference_cooldown_sec` | `0.25` s | Minimum interval between accepted resets |
 
-The OAK filter derives its nominal fallback frequency from `fps`; filtering
-normally uses the timestamp interval between consecutive frames.
+For RGB, overlay distance is measured in aspect-corrected normalized image
+coordinates. For OAK, it is measured in meters.
 
-### Visualization
+### RGB-only parameters
 
-Hand-landmark visualization is built into the landmark producer nodes. Enable it
-with the `visualize` parameter and select the OpenCV window title with
-`window_name`. The shared, ROS-independent implementation is available to Python
-callers as `mediapipe_mocap.viewer.HandLandmarksViewer`. The performance overlay
-refreshes half-second window averages for FPS and MediaPipe processing time;
-current-frame status such as missing OAK depth remains live.
-
-The viewer always receives the same post-filter landmark state used for
-reference handling and publication. For OAK, filtered metric points are
-reprojected through the RGB intrinsics for drawing; invalid reprojection skips
-that hand instead of falling back to raw MediaPipe image coordinates.
-
-Set `show_control_overlay:=true` to add a display-only joystick preview.
-`vector` mode draws circular/spherical zones and preserves displacement
-direction; `axis` mode draws rectangular/cuboid zones and normalizes each
-component independently. The preview reports filtered displacement, normalized
-value, and `DEAD`, `ACTIVE`, or `SATURATED` state. Overlay settings never change
-`/hand_landmarks`; when disabled, their tuning parameters are ignored while
-landmarks, reference, FPS, timing, and OAK depth status remain visible.
-
-### Configuration
-
-Parameters are loaded from `config/hand_landmarks_node.yaml`.
-
-Both landmark producers use MediaPipe's synchronous `VIDEO` mode. Timestamps
-are made strictly increasing before each `detect_for_video` call.
-
-**Execution delegate (`delegate`):**
-
-- `AUTO`: prefer GPU on native Linux and retry with CPU if GPU initialization fails.
-- `CPU`: require CPU execution.
-- `GPU`: require GPU execution and surface initialization errors.
-
-Before importing the computer-vision stack, each node applies the virtual
-environment discovery described above. On Linux systems where an NVIDIA
-driver is detected, it also sets the PRIME render-offload and GLX vendor
-environment variables.
-
-**Model path handling:**
-
-- By default, `model_path` is left empty in the YAML file, which triggers automatic resolution to `<package_share>/models/hand_landmarker.task`
-- To use a custom model, edit `config/hand_landmarks_node.yaml` and set `model_path` to an absolute path:
-  ```yaml
-  hand_landmarks_node:
-    ros__parameters:
-      model_path: "/path/to/custom/hand_landmarker.task"
-  ```
-
-Override parameters at runtime:
-
-```bash
-ros2 run mediapipe_mocap hand_landmarks_node \
-  --ros-args \
-  -p image_topic:=/my/custom/image/topic \
-  -p model_path:=/path/to/custom/model.task
-```
-
-Enable built-in visualization directly in the node:
-
-```bash
-ros2 run mediapipe_mocap hand_landmarks_node \
-  --ros-args \
-  -p visualize:=true \
-  -p window_name:="Hand Landmarks (Node)"
-```
-
-## Launch Files
-
-Launch parameter arguments use `__use_yaml__` internally when they are omitted.
-That sentinel is never passed to a node. Effective parameter precedence is:
-an explicit terminal argument, then the loaded YAML parameter file, then the
-node's built-in declaration. Launch Python files do not inject another
-parameter default.
-
-### hand_landmarks_launch.py
-Starts only the hand landmarks detection node:
-```bash
-ros2 launch mediapipe_mocap hand_landmarks_launch.py
-```
-
-With built-in visualization enabled:
-```bash
-ros2 launch mediapipe_mocap hand_landmarks_launch.py visualize:=true window_name:="Hand Landmarks (Node)"
-```
-
-Add the optional control preview with:
-
-```bash
-ros2 launch mediapipe_mocap hand_landmarks_launch.py \
-  visualize:=true \
-  show_control_overlay:=true \
-  overlay_normalization_mode:=vector
-```
-
-### oak_hand_landmarks_launch.py
-Starts only the OAK-D S2 RGBD 3D hand landmarks node:
-```bash
-ros2 launch mediapipe_mocap oak_hand_landmarks_launch.py
-```
-
-**Parameters:**
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `fps` | YAML | Optional OAK camera FPS override |
-| `rgb_width` | YAML | Optional RGB/depth output-width override |
-| `rgb_height` | YAML | Optional RGB/depth output-height override |
-| `visualize` | YAML | Optional OpenCV visualization override |
-| `window_name` | YAML | Optional OpenCV window-title override |
-| `show_control_overlay` | YAML | Optional control-preview visibility override |
-| `overlay_dead_zone` | YAML | Optional display-only metric dead-zone override |
-| `overlay_saturation_zone` | YAML | Optional display-only metric saturation override |
-| `overlay_normalization_mode` | YAML | Optional `axis` or `vector` preview override |
-| `landmark_index` | YAML | Optional tracked-landmark override |
-| `reset_reference_topic` | `/reset_reference` | Reset topic loaded from the shipped OAK YAML |
+| `image_topic` | `/camera/color/image_raw` | Input RGB image topic |
+| `selfie_mode` | `false` | Mirror input images before detection |
+| `one_euro_frequency` | `30.0` Hz | Nominal filter sampling frequency |
+| `initial_reference` | `[0.5, 0.5, 0.5]` | Initial normalized-image reference; output remains planar |
+| `window_name` | `Hand Landmarks (Node)` | RGB viewer title |
 
-### usb_cam_hand_landmarks_launch.py
-Complete pipeline using the maintained ROS 2 `usb_cam` driver. The raw camera
-topic remains unmirrored; selfie mirroring is applied only inside the hand
-landmarks detector.
+### OAK-only parameters
 
-```bash
-ros2 launch mediapipe_mocap usb_cam_hand_landmarks_launch.py
-```
-
-Camera defaults are loaded from `config/usb_cam.yaml`. Leave an override empty
-to use the YAML value.
-
-**Parameters:**
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `usb_cam_params_file` | package `config/usb_cam.yaml` | usb_cam YAML parameter file |
-| `hand_landmarks_params_file` | package `config/hand_landmarks_node.yaml` | Detector YAML parameter file |
-| `video_device` | empty | Override the YAML video device, such as `/dev/video1` |
-| `framerate` | empty | Override the YAML camera frame rate |
-| `image_width` | empty | Override the YAML image width |
-| `image_height` | empty | Override the YAML image height |
-| `pixel_format` | empty | Override the YAML usb_cam pixel format |
-| `frame_id` | empty | Override the YAML camera frame ID |
-| `image_topic` | `/camera/color/image_raw` | Raw image topic published by usb_cam and consumed by the detector |
-| `selfie_mode` | true | Mirror frames inside the detector |
+| `camera_frame_id` | `oak_rgb_camera_optical_frame` | Published cloud frame |
+| `rgb_width` | `640` px | Aligned RGB/depth width |
+| `rgb_height` | `400` px | Aligned RGB/depth height |
+| `fps` | `50.0` Hz | OAK capture rate and nominal filter frequency |
+| `rgb_socket` | `CAM_A` | RGB camera-board socket |
+| `left_socket` | `CAM_B` | Left mono camera-board socket |
+| `right_socket` | `CAM_C` | Right mono camera-board socket |
+| `stereo_preset` | `FAST_DENSITY` | DepthAI StereoDepth preset |
+| `stereo_left_right_check` | `true` | Enable stereo consistency checking |
+| `stereo_subpixel` | `false` | Enable subpixel disparity |
+| `stereo_extended_disparity` | `false` | Enable extended disparity |
+| `stereo_rectify_edge_fill_color` | `0` | Rectification edge-fill value, 0–255 |
+| `sync_threshold_ms` | `15.0` ms | Maximum RGB/depth synchronization offset |
+| `sync_attempts` | `-1` | DepthAI synchronization attempt policy |
+| `sync_run_on_host` | `true` | Run RGB/depth synchronization on the host |
+| `depth_sample_radius_px` | `2` px | Sampling radius around each landmark |
+| `min_depth_m` | `0.12` m | Minimum accepted depth |
+| `max_depth_m` | `3.0` m | Maximum accepted depth |
+| `depth_percentile` | `50.0` | Percentile selected from valid nearby samples |
+| `missing_depth_strategy` | `reuse_last` | `skip_frame`, `reuse_last`, or `hand_median` |
+| `max_missing_depth_landmarks` | `8` | Maximum missing direct samples accepted before rejecting the hand |
+| `initial_reference` | `[0.0, 0.0, 0.6]` m | Used when automatic first-hand reference is disabled |
+| `auto_reference_on_first_detection` | `true` | Initialize from the first complete metric hand |
+| `window_name` | `3D Hand Landmarks OAK` | OAK viewer title |
 
-**Example with custom parameters:**
+With `reuse_last`, a missing landmark uses its last valid depth when available,
+then the current hand median. `hand_median` uses the current hand median.
+`skip_frame` rejects any hand with a missing direct sample. Every policy still
+requires a complete 21-point result before publication.
+
+Parameter descriptors include units, ranges, and enum constraints. Inspect
+them at runtime with:
+
 ```bash
-ros2 launch mediapipe_mocap usb_cam_hand_landmarks_launch.py \
-  video_device:=/dev/video1 \
-  framerate:=60.0 \
-  image_width:=1280 \
-  image_height:=720 \
-  pixel_format:=mjpeg2rgb
+ros2 param describe /hand_landmarks_node overlay_dead_zone
+ros2 param describe /oak_hand_landmarks_node missing_depth_strategy
 ```
 
-### Testing Hand Landmarks with Offline Video
+## Configuration defaults
 
-Run the offline video publisher in one terminal:
+The standalone launches load the package YAML, then apply only explicit launch
+overrides. Effective precedence is:
+
+```text
+explicit terminal launch argument → YAML parameter → executable built-in
+```
+
+An omitted standalone launch argument uses the YAML value. The internal
+`__use_yaml__` sentinel is never passed to a node.
+
+| Setting | Built-in | RGB YAML | OAK YAML |
+|---------|----------|----------|----------|
+| `visualize` | `false` | `true` | `true` |
+| `show_control_overlay` | `false` | `true` | `false` |
+| Filter enabled | `true` | `true` | `true` |
+| Nominal filter frequency | RGB 30 Hz / OAK `fps` | 30 Hz | 50 Hz |
+
+`usb_cam_hand_landmarks_launch.py` additionally sets the producer
+`image_topic` from its launch argument and defaults `selfie_mode` to `true`.
+Camera settings come from `config/usb_cam.yaml`; a non-empty terminal camera
+argument overrides the corresponding YAML value.
+
+To use a custom model:
+
+```yaml
+hand_landmarks_node:
+  ros__parameters:
+    model_path: "/path/to/custom/hand_landmarker.task"
+```
+
+`AUTO` delegate selection prefers GPU on native Linux and retries with CPU if
+GPU initialization fails. `CPU` and `GPU` require the requested delegate and
+surface initialization errors. Before importing the vision stack, each node
+prefers an active virtual environment or discovers `.venv_mediapipe` in up to
+four parent directories. On Linux with an NVIDIA driver, it also requests
+PRIME render offload through the NVIDIA environment variables.
+
+## Environment
+
+The supported baseline is Ubuntu 24.04, ROS 2 Jazzy, and Python 3.12. Other
+ROS distributions and operating-system versions are unverified.
+
+MediaPipe and DepthAI are installed with pip in `.venv_mediapipe`, not through
+rosdep:
+
+```bash
+sudo apt install python3.12-venv
+
+cd ~/dev/extender_workspace
+python3 -m venv .venv_mediapipe --system-site-packages
+source .venv_mediapipe/bin/activate
+python -m pip install --upgrade pip
+python -m pip install \
+  --constraint src/tools/mediapipe_mocap/constraints-jazzy.txt \
+  numpy opencv-contrib-python mediapipe depthai
+
+python -c "import numpy, cv2; print(numpy.__version__, cv2.__version__)"
+python -c "import mediapipe, depthai; print(mediapipe.__version__, depthai.__version__)"
+```
+
+Do not upgrade this environment to NumPy 2.x. ROS Jazzy's system extensions
+use the NumPy 1.x ABI. The constraints file pins the validated baseline:
+
+- `numpy==1.26.4`
+- `opencv-contrib-python==4.11.0.86`
+- `mediapipe==0.10.35`
+- `depthai==3.7.1`
+
+Install the ROS USB camera driver when using the RGB USB launch:
+
+```bash
+sudo apt update
+sudo apt install ros-$ROS_DISTRO-usb-cam
+ros2 pkg executables usb_cam
+```
+
+Build with the virtual environment active:
+
+```bash
+cd ~/dev/extender_workspace
+source .venv_mediapipe/bin/activate
+colcon build --packages-up-to mediapipe_mocap --symlink-install
+source install/setup.bash
+```
+
+The Hand Landmarker model is bundled and resolved automatically.
+
+## Offline video
+
+Run the offline publisher:
 
 ```bash
 ros2 run offline_media_publisher video_publisher --ros-args \
@@ -394,27 +403,15 @@ ros2 run offline_media_publisher video_publisher --ros-args \
   -p fps:=30
 ```
 
-In a second terminal, run hand-landmark detection with its standard
-configuration:
+Then start the RGB producer:
 
 ```bash
-ros2 run mediapipe_mocap hand_landmarks_node --ros-args \
-  --params-file "$(ros2 pkg prefix mediapipe_mocap)/share/mediapipe_mocap/config/hand_landmarks_node.yaml"
-```
-
-## Building
-
-```bash
-cd ~/dev/extender_workspace
-source .venv_mediapipe/bin/activate          # activate venv with mediapipe
-colcon build --packages-up-to mediapipe_mocap --symlink-install
-source install/setup.bash
+ros2 launch mediapipe_mocap hand_landmarks_launch.py
 ```
 
 ## Testing
 
-Activate the pinned virtual environment, build the package and its
-`signal_processing` dependency, then run both test suites:
+The unit, lint, and launch-contract tests require no camera:
 
 ```bash
 cd ~/dev/extender_workspace
@@ -423,22 +420,6 @@ colcon build --packages-up-to mediapipe_mocap --symlink-install
 colcon test --packages-select signal_processing mediapipe_mocap
 colcon test-result --verbose
 ```
-
-The current unit and lint tests do not require a camera.
-
-## Dependencies
-
-- Ubuntu 24.04, ROS 2 Jazzy, and Python 3.12
-- OpenCV
-- cv_bridge
-- usb_cam
-- MediaPipe (Python, pip-installed in `.venv_mediapipe`)
-- DepthAI (Python, pip-installed in `.venv_mediapipe`, for OAK-D S2 RGBD tracking)
-- NumPy
-- signal_processing
-
-Other ROS distributions and operating-system versions are currently
-unverified.
 
 ## License
 
