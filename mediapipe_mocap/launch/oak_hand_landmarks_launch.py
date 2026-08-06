@@ -26,7 +26,7 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-"""Launch the RGB MediaPipe hand-landmarks producer."""
+"""Launch the OAK MediaPipe hand-landmarks producer."""
 
 import os
 
@@ -48,15 +48,19 @@ def _parse_bool(value):
 
 
 def _create_node(context):
-    """Create the producer with only explicit terminal overrides."""
+    """Create the OAK producer with only explicit terminal overrides."""
     overrides = {}
     for argument_name, parameter_name, value_type in (
+        ('fps', 'fps', float),
+        ('rgb_width', 'rgb_width', int),
+        ('rgb_height', 'rgb_height', int),
         ('visualize', 'visualize', _parse_bool),
         ('window_name', 'window_name', str),
         ('show_control_overlay', 'show_control_overlay', _parse_bool),
         ('overlay_dead_zone', 'overlay_dead_zone', float),
         ('overlay_saturation_zone', 'overlay_saturation_zone', float),
         ('overlay_normalization_mode', 'overlay_normalization_mode', str),
+        ('landmark_index', 'tracked_landmark_index', int),
     ):
         value = LaunchConfiguration(argument_name).perform(context)
         if value != USE_YAML_DEFAULT:
@@ -65,11 +69,11 @@ def _create_node(context):
     return [
         Node(
             package='mediapipe_mocap',
-            executable='hand_landmarks_node',
-            name='hand_landmarks_node',
+            executable='oak_hand_landmarks_node',
+            name='oak_hand_landmarks_node',
             output='screen',
             parameters=[
-                LaunchConfiguration('config_file'),
+                LaunchConfiguration('oak_config_file'),
                 overrides,
             ],
         )
@@ -77,19 +81,34 @@ def _create_node(context):
 
 
 def generate_launch_description():
-    """Create the standalone 2D hand landmarks launch description."""
+    """Create the standalone OAK 3D hand landmarks launch description."""
     package_share_dir = get_package_share_directory('mediapipe_mocap')
     config_file = os.path.join(
         package_share_dir,
         'config',
-        'hand_landmarks_node.yaml',
+        'oak_hand_landmarks_node.yaml',
     )
 
     arguments = [
         DeclareLaunchArgument(
-            'config_file',
+            'oak_config_file',
             default_value=config_file,
-            description='Path to the producer YAML parameter file',
+            description='Path to the OAK producer YAML parameter file',
+        ),
+        DeclareLaunchArgument(
+            'fps',
+            default_value=USE_YAML_DEFAULT,
+            description='Override the YAML OAK camera FPS',
+        ),
+        DeclareLaunchArgument(
+            'rgb_width',
+            default_value=USE_YAML_DEFAULT,
+            description='Override the YAML RGB/depth output width',
+        ),
+        DeclareLaunchArgument(
+            'rgb_height',
+            default_value=USE_YAML_DEFAULT,
+            description='Override the YAML RGB/depth output height',
         ),
         DeclareLaunchArgument(
             'visualize',
@@ -109,17 +128,22 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'overlay_dead_zone',
             default_value=USE_YAML_DEFAULT,
-            description='Override the YAML display-only dead-zone radius',
+            description='Override the YAML metric dead-zone radius',
         ),
         DeclareLaunchArgument(
             'overlay_saturation_zone',
             default_value=USE_YAML_DEFAULT,
-            description='Override the YAML display-only saturation radius',
+            description='Override the YAML metric saturation radius',
         ),
         DeclareLaunchArgument(
             'overlay_normalization_mode',
             default_value=USE_YAML_DEFAULT,
             description='Override the YAML axis or vector overlay mode',
+        ),
+        DeclareLaunchArgument(
+            'landmark_index',
+            default_value=USE_YAML_DEFAULT,
+            description='Override the YAML tracked landmark index (0-20)',
         ),
     ]
 

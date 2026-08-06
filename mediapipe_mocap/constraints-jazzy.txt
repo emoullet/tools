@@ -1,0 +1,5 @@
+# Ubuntu 24.04, ROS 2 Jazzy, and Python 3.12 compatibility baseline.
+numpy==1.26.4
+opencv-contrib-python==4.11.0.86
+mediapipe==0.10.35
+depthai==3.7.1
