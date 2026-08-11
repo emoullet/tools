@@ -14,6 +14,8 @@
  * All functions are ROS-agnostic.
  */
 
+#include <algorithm>
+
 #include <Eigen/Core>
 
 namespace signal_processing
@@ -87,5 +89,43 @@ namespace signal_processing
    * @return Norm-limited vector with the same direction as @p value.
    */
   Eigen::VectorXd limitNorm(const Eigen::VectorXd &value, double max_norm);
+
+  /**
+   * @brief Limit linear and angular norms using one shared scale factor.
+   *
+   * Positive limits are enabled; non-positive limits leave the corresponding
+   * component unconstrained. When either enabled limit is exceeded, both
+   * components are scaled by the most restrictive factor so their relative
+   * magnitudes are preserved.
+   *
+   * @tparam VelocityTwistT Copyable type with Eigen-like `linear` and
+   * `angular` members.
+   * @param value Input velocity command.
+   * @param max_linear_norm Maximum enabled norm for the linear component.
+   * @param max_angular_norm Maximum enabled norm for the angular component.
+   * @return A conjointly norm-limited copy of @p value.
+   */
+  template <typename VelocityTwistT>
+  VelocityTwistT limitVelocityTwistNorm(const VelocityTwistT &value, double max_linear_norm,
+                                        double max_angular_norm)
+  {
+    double scale = 1.0;
+    const double linear_norm = value.linear.norm();
+    const double angular_norm = value.angular.norm();
+
+    if (max_linear_norm > 0.0 && linear_norm > max_linear_norm)
+    {
+      scale = std::min(scale, max_linear_norm / linear_norm);
+    }
+    if (max_angular_norm > 0.0 && angular_norm > max_angular_norm)
+    {
+      scale = std::min(scale, max_angular_norm / angular_norm);
+    }
+
+    VelocityTwistT limited = value;
+    limited.linear *= scale;
+    limited.angular *= scale;
+    return limited;
+  }
 
 } // namespace signal_processing

@@ -11,6 +11,12 @@
 
 namespace
 {
+  struct VelocityTwist
+  {
+    Eigen::Vector3d linear;
+    Eigen::Vector3d angular;
+  };
+
   Eigen::VectorXd vector3(double x, double y, double z)
   {
     Eigen::VectorXd value(3);
