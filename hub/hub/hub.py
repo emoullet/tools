@@ -23,6 +23,8 @@ import time
 import geometry_msgs.msg
 from std_msgs.msg import Bool, Int8MultiArray, Float32MultiArray, Float32, String, Float32MultiArray
 
+MAX_SERIAL_ARGS = 10
+
 class ArduinoBridgeNode(Node):
 
     def __init__(self):
@@ -140,6 +142,27 @@ class ArduinoBridgeNode(Node):
     # =====================================================
     #               ROS → ARDUINO
     # =====================================================
+
+    def write_serial_command(self, command: str, values, label: str, require_pairs: bool = False):
+        if len(values) > MAX_SERIAL_ARGS:
+            self.get_logger().error(
+                f"{label} command rejected: {len(values)} arguments exceeds {MAX_SERIAL_ARGS}"
+            )
+            return
+
+        if require_pairs and len(values) % 2 != 0:
+            self.get_logger().error(
+                f"{label} command rejected: expected pin/value pairs, got {len(values)} arguments"
+            )
+            return
+
+        csv_str = command
+        for value in values:
+            csv_str += f" {int(value)}"
+        csv_str += "\n"
+
+        self.serial_port.write(csv_str.encode('utf-8'))
+        self.get_logger().info(f"Send {label} command : {csv_str.strip()}")
     
     def callback_digital_output(self, msg: Float32MultiArray):
         """
@@ -151,16 +174,7 @@ class ArduinoBridgeNode(Node):
             """
             Format attendu : D <pin_number> <value>
             """
-            csv_str = "D"
-            #self.get_logger().info(f"Length of msg.data: {msg.data}")
-            #self.get_logger().info(f"Length of msg.data: {len(msg.data)}")
-            for i in range(len(msg.data)):
-                csv_str += f" {int(msg.data[i])}"
-            csv_str += " \n"
-            
-            self.serial_port.write(csv_str.encode('utf-8'))
-            # LOG pour debug
-            self.get_logger().info(f"Send digital output command : {csv_str.strip()}")
+            self.write_serial_command("D", msg.data, "digital output", require_pairs=True)
 
         except Exception as e:
             self.get_logger().error(f"Erreur digital output : {e}")
@@ -178,16 +192,7 @@ class ArduinoBridgeNode(Node):
             """
             Format attendu : P <pin_number> <value>
             """
-            csv_str = "P"
-            #self.get_logger().info(f"Length of msg.data: {msg.data}")
-            #self.get_logger().info(f"Length of msg.data: {len(msg.data)}")
-            for i in range(len(msg.data)):
-                csv_str += f" {int(msg.data[i])}"
-            csv_str += " \n"
-            
-            self.serial_port.write(csv_str.encode('utf-8'))
-            # LOG pour debug
-            self.get_logger().info(f"Send pwm output command : {csv_str.strip()}")
+            self.write_serial_command("P", msg.data, "pwm output", require_pairs=True)
 
         except Exception as e:
             self.get_logger().error(f"Erreur pwm output : {e}")
@@ -205,16 +210,7 @@ class ArduinoBridgeNode(Node):
             """
             Format attendu : S <pin_number> <type I/O> (<value>)
             """
-            csv_str = "S"
-            #self.get_logger().info(f"Length of msg.data: {msg.data}")
-            #self.get_logger().info(f"Length of msg.data: {len(msg.data)}")
-            for i in range(len(msg.data)):
-                csv_str += f" {int(msg.data[i])}"
-            csv_str += " \n"
-            
-            self.serial_port.write(csv_str.encode('utf-8'))
-            # LOG pour debug
-            self.get_logger().info(f"Send settings command : {csv_str.strip()}")
+            self.write_serial_command("S", msg.data, "settings")
 
         except Exception as e:
             self.get_logger().error(f"Erreur settings : {e}")

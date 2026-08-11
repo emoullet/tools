@@ -14,7 +14,7 @@ setup(
             'launch/hub_launch.py'
         ]),
     ],
-    install_requires=['setuptools'],
+    install_requires=['setuptools', 'pyserial'],
     zip_safe=True,
     maintainer='robingibaud',
     maintainer_email='robingibaud@todo.todo',

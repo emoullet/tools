@@ -1,6 +1,6 @@
 # Tools
 
-A collection of utility packages for the extender robot control framework, providing message definitions, motion capture, media publishing, and data replay capabilities.
+A collection of utility packages for the extender robot control framework, providing message definitions, perception helpers, hardware bridges, signal-processing utilities, media publishing, and identification tools.
 
 ## Packages
 
@@ -38,8 +38,17 @@ ROS2 message definitions for the extender framework. Defines custom message type
 **Messages**:
 - `TeleopCommand`: Teleoperation commands with velocity and mode selection
 - `JointPositionCommand`: Joint position commands with named joint targeting
-- `AprilTagPose`: Single AprilTag detection with pose information
-- `AprilTagPoseArray`: Collection of detected AprilTag poses
+- `SharedControlGoal`: Single shared-control target
+- `SharedControlGoalArray`: Collection of shared-control targets
+
+### hub
+**Package**: `hub`
+
+Bridge between ROS 2 topics and an Arduino Mega over USB serial. It publishes Arduino input state changes and forwards ROS commands to digital, PWM, and pin-setting serial commands.
+
+**Topics**:
+- Publishes: `/hub/digital_input`, `/hub/analogic_input`
+- Subscribes: `/hub/digital_output`, `/hub/pwm_output`, `/hub/setting`
 
 ### mediapipe_mocap
 **Package**: `mediapipe_mocap`
@@ -60,10 +69,16 @@ Simulated camera stream publisher for testing and development. Publishes images 
 **Components**:
 - `video_publisher`: Publishes video files as camera topics with configurable playback
 
-### replay_joint_positions
-**Package**: `replay_joint_positions`
+### signal_processing
+**Package**: `signal_processing`
 
-Utility for replaying recorded joint position trajectories. Useful for testing controllers and reproducing robot motions from recorded data.
+Reusable C++ and Python signal-processing helpers for controllers and tools.
+
+**Features**:
+- Scalar and vector saturation helpers
+- Dead-zone helpers
+- One Euro filtering
+- First-order low-pass filtering
 
 ## Dependencies
 
@@ -88,6 +103,13 @@ Utility for replaying recorded joint position trajectories. Useful for testing c
 
 **offline_media_publisher**:
 - OpenCV
+
+**hub**:
+- pyserial / `python3-serial`
+- Arduino Mega firmware dependencies for the sketch, including MCP2515 CAN support
+
+**signal_processing**:
+- Eigen3
 
 **extender_msgs**:
 - ROS2 message generation tools
