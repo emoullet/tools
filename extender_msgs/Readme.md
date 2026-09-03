@@ -13,6 +13,19 @@ The `extender_msgs` package contains ROS2 message definitions used throughout th
 
 ## Messages
 
+### CartesianVelocityCommand
+
+An atomic Cartesian velocity command carrying both the physical reference frame and the frame used
+to interpret its angular components.
+
+**Fields**:
+
+- **`header`** (`std_msgs/Header`): Timestamp and physical frame for the command.
+- **`twist`** (`geometry_msgs/Twist`): Linear and angular velocity components.
+- **`orientation_frame_id`** (`string`): Angular-input frame selector. Supported constants are
+  `BASE_FRAME` (`base_frame`), `EFFECTOR_FRAME` (`effector_frame`), and `HYBRID_FRAME`
+  (`hybrid_frame`).
+
 ### TeleopCommand
 
 A comprehensive teleoperation command message that combines velocity commands with operational modes.

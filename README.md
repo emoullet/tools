@@ -36,6 +36,7 @@ Real-time AprilTag detection and 3D pose estimation from camera feeds. Uses the 
 ROS2 message definitions for the extender framework. Defines custom message types for teleoperation commands, joint control, and vision-based applications.
 
 **Messages**:
+- `CartesianVelocityCommand`: Stamped Cartesian velocity with an angular orientation-frame selector
 - `TeleopCommand`: Teleoperation commands with velocity and mode selection
 - `JointPositionCommand`: Joint position commands with named joint targeting
 - `SharedControlGoal`: Single shared-control target
